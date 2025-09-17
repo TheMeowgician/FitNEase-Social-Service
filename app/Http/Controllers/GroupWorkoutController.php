@@ -7,7 +7,6 @@ use App\Models\GroupMember;
 use App\Models\GroupWorkoutEvaluation;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
-use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\Validator;
 use GuzzleHttp\Client;
 use Carbon\Carbon;
@@ -26,7 +25,7 @@ class GroupWorkoutController extends Controller
         }
 
         $membership = GroupMember::where('group_id', $groupId)
-            ->where('user_id', Auth::id())
+            ->where('user_id', $request->attributes->get('user_id'))
             ->where('is_active', true)
             ->first();
 
@@ -99,7 +98,7 @@ class GroupWorkoutController extends Controller
         }
 
         $membership = GroupMember::where('group_id', $request->group_id)
-            ->where('user_id', Auth::id())
+            ->where('user_id', $request->attributes->get('user_id'))
             ->where('is_active', true)
             ->first();
 
@@ -111,7 +110,7 @@ class GroupWorkoutController extends Controller
         }
 
         $moderationResult = $this->moderateGroupActivity($request->group_id, [
-            'user_id' => Auth::id(),
+            'user_id' => $request->attributes->get('user_id'),
             'comment' => $request->comment
         ]);
 
@@ -125,7 +124,7 @@ class GroupWorkoutController extends Controller
 
         $existingEvaluation = GroupWorkoutEvaluation::where('group_id', $request->group_id)
             ->where('workout_id', $request->workout_id)
-            ->where('user_id', Auth::id())
+            ->where('user_id', $request->attributes->get('user_id'))
             ->first();
 
         if ($existingEvaluation) {
@@ -136,7 +135,7 @@ class GroupWorkoutController extends Controller
 
             return response()->json([
                 'status' => 'success',
-                'data' => $existingEvaluation->fresh(['group', 'user']),
+                'data' => $existingEvaluation->fresh(['group']),
                 'message' => 'Workout evaluation updated successfully'
             ]);
         }
@@ -144,14 +143,14 @@ class GroupWorkoutController extends Controller
         $evaluation = GroupWorkoutEvaluation::create([
             'group_id' => $request->group_id,
             'workout_id' => $request->workout_id,
-            'user_id' => Auth::id(),
+            'user_id' => $request->attributes->get('user_id'),
             'evaluation_type' => $request->evaluation_type,
             'comment' => $request->comment
         ]);
 
         return response()->json([
             'status' => 'success',
-            'data' => $evaluation->load(['group', 'user']),
+            'data' => $evaluation->load(['group']),
             'message' => 'Workout evaluation created successfully'
         ], 201);
     }
@@ -168,7 +167,7 @@ class GroupWorkoutController extends Controller
         }
 
         $membership = GroupMember::where('group_id', $groupId)
-            ->where('user_id', Auth::id())
+            ->where('user_id', $request->attributes->get('user_id'))
             ->where('is_active', true)
             ->first();
 
@@ -231,7 +230,7 @@ class GroupWorkoutController extends Controller
         }
 
         $membership = GroupMember::where('group_id', $groupId)
-            ->where('user_id', Auth::id())
+            ->where('user_id', $request->attributes->get('user_id'))
             ->where('is_active', true)
             ->first();
 
@@ -259,7 +258,7 @@ class GroupWorkoutController extends Controller
     public function joinGroupWorkout(string $groupId, string $workoutId): JsonResponse
     {
         $membership = GroupMember::where('group_id', $groupId)
-            ->where('user_id', Auth::id())
+            ->where('user_id', $request->attributes->get('user_id'))
             ->where('is_active', true)
             ->first();
 
@@ -274,7 +273,7 @@ class GroupWorkoutController extends Controller
             $client = new Client();
             $response = $client->post(env('TRACKING_SERVICE_URL') . '/tracking/group-workout-session', [
                 'json' => [
-                    'user_id' => Auth::id(),
+                    'user_id' => $request->attributes->get('user_id'),
                     'workout_id' => $workoutId,
                     'group_id' => $groupId,
                     'session_type' => 'group'
@@ -311,7 +310,7 @@ class GroupWorkoutController extends Controller
         }
 
         $membership = GroupMember::where('group_id', $groupId)
-            ->where('user_id', Auth::id())
+            ->where('user_id', $request->attributes->get('user_id'))
             ->where('is_active', true)
             ->first();
 
@@ -322,14 +321,13 @@ class GroupWorkoutController extends Controller
             ], 403);
         }
 
-        $evaluations = GroupWorkoutEvaluation::with(['user'])
-            ->where('group_id', $groupId)
+        $evaluations = GroupWorkoutEvaluation::where('group_id', $groupId)
             ->where('workout_id', $workoutId)
             ->latest()
             ->get();
 
         $stats = GroupWorkoutEvaluation::getWorkoutStats($groupId, $workoutId);
-        $userEvaluation = GroupWorkoutEvaluation::getUserEvaluation($groupId, $workoutId, Auth::id());
+        $userEvaluation = GroupWorkoutEvaluation::getUserEvaluation($groupId, $workoutId, $request->attributes->get('user_id'));
 
         return response()->json([
             'status' => 'success',
@@ -354,7 +352,7 @@ class GroupWorkoutController extends Controller
         }
 
         $membership = GroupMember::where('group_id', $groupId)
-            ->where('user_id', Auth::id())
+            ->where('user_id', $request->attributes->get('user_id'))
             ->where('is_active', true)
             ->first();
 

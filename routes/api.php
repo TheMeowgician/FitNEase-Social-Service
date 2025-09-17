@@ -14,6 +14,7 @@ Route::get('/health', function () {
     return response()->json(['status' => 'OK', 'service' => 'fitnease-social']);
 });
 
+
 Route::prefix('social')->middleware('auth.api')->group(function () {
 
     // Group Management

@@ -6,7 +6,6 @@ use App\Models\Group;
 use App\Models\GroupMember;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
-use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
 use GuzzleHttp\Client;
@@ -46,7 +45,7 @@ class GroupMemberController extends Controller
         }
 
         $existingMembership = GroupMember::where('group_id', $group->group_id)
-            ->where('user_id', Auth::id())
+            ->where('user_id', $request->attributes->get('user_id'))
             ->first();
 
         if ($existingMembership) {
@@ -60,7 +59,7 @@ class GroupMemberController extends Controller
 
                 return response()->json([
                     'status' => 'success',
-                    'data' => $existingMembership->load(['group', 'user']),
+                    'data' => $existingMembership->load(['group']),
                     'message' => 'Rejoined group successfully'
                 ]);
             }
@@ -68,20 +67,20 @@ class GroupMemberController extends Controller
 
         $membership = GroupMember::create([
             'group_id' => $group->group_id,
-            'user_id' => Auth::id(),
+            'user_id' => $request->attributes->get('user_id'),
             'member_role' => 'member'
         ]);
 
-        $this->notifyGroupJoin($group, Auth::id());
+        $this->notifyGroupJoin($group, $request->attributes->get('user_id'));
 
         return response()->json([
             'status' => 'success',
-            'data' => $membership->load(['group', 'user']),
+            'data' => $membership->load(['group']),
             'message' => 'Joined group successfully'
         ], 201);
     }
 
-    public function joinGroup(string $groupId): JsonResponse
+    public function joinGroup(Request $request, string $groupId): JsonResponse
     {
         $group = Group::where('group_id', $groupId)
             ->active()
@@ -103,7 +102,7 @@ class GroupMemberController extends Controller
         }
 
         $existingMembership = GroupMember::where('group_id', $groupId)
-            ->where('user_id', Auth::id())
+            ->where('user_id', $request->attributes->get('user_id'))
             ->first();
 
         if ($existingMembership) {
@@ -117,7 +116,7 @@ class GroupMemberController extends Controller
 
                 return response()->json([
                     'status' => 'success',
-                    'data' => $existingMembership->load(['group', 'user']),
+                    'data' => $existingMembership->load(['group']),
                     'message' => 'Rejoined group successfully'
                 ]);
             }
@@ -125,15 +124,15 @@ class GroupMemberController extends Controller
 
         $membership = GroupMember::create([
             'group_id' => $groupId,
-            'user_id' => Auth::id(),
+            'user_id' => $request->attributes->get('user_id'),
             'member_role' => 'member'
         ]);
 
-        $this->notifyGroupJoin($group, Auth::id());
+        $this->notifyGroupJoin($group, $request->attributes->get('user_id'));
 
         return response()->json([
             'status' => 'success',
-            'data' => $membership->load(['group', 'user']),
+            'data' => $membership->load(['group']),
             'message' => 'Joined group successfully'
         ], 201);
     }
@@ -162,7 +161,7 @@ class GroupMemberController extends Controller
         }
 
         $inviterMembership = GroupMember::where('group_id', $groupId)
-            ->where('user_id', Auth::id())
+            ->where('user_id', $request->attributes->get('user_id'))
             ->where('is_active', true)
             ->first();
 
@@ -192,7 +191,7 @@ class GroupMemberController extends Controller
             ], 400);
         }
 
-        $this->notifyUserInvitation($group, $request->user_id, Auth::id());
+        $this->notifyUserInvitation($group, $request->user_id, $request->attributes->get('user_id'));
 
         return response()->json([
             'status' => 'success',
@@ -200,10 +199,10 @@ class GroupMemberController extends Controller
         ]);
     }
 
-    public function leaveGroup(string $groupId): JsonResponse
+    public function leaveGroup(Request $request, string $groupId): JsonResponse
     {
         $membership = GroupMember::where('group_id', $groupId)
-            ->where('user_id', Auth::id())
+            ->where('user_id', $request->attributes->get('user_id'))
             ->where('is_active', true)
             ->first();
 
@@ -217,7 +216,7 @@ class GroupMemberController extends Controller
         if ($membership->member_role === 'admin') {
             $otherAdmins = GroupMember::where('group_id', $groupId)
                 ->where('member_role', 'admin')
-                ->where('user_id', '!=', Auth::id())
+                ->where('user_id', '!=', $request->attributes->get('user_id'))
                 ->where('is_active', true)
                 ->count();
 
@@ -237,16 +236,16 @@ class GroupMemberController extends Controller
         ]);
     }
 
-    public function getUserGroups(string $userId): JsonResponse
+    public function getUserGroups(Request $request, string $userId): JsonResponse
     {
-        if (Auth::id() != $userId) {
+        if ($request->attributes->get('user_id') != $userId) {
             return response()->json([
                 'status' => 'error',
                 'message' => 'Unauthorized to view user groups'
             ], 403);
         }
 
-        $memberships = GroupMember::with(['group.creator'])
+        $memberships = GroupMember::with(['group'])
             ->where('user_id', $userId)
             ->where('is_active', true)
             ->latest('joined_at')
@@ -264,7 +263,7 @@ class GroupMemberController extends Controller
                 'joined_at' => $membership->joined_at,
                 'group_image' => $group->group_image,
                 'is_private' => $group->is_private,
-                'creator' => $group->creator
+                'created_by' => $group->created_by
             ];
         });
 
@@ -290,7 +289,7 @@ class GroupMemberController extends Controller
         }
 
         $updaterMembership = GroupMember::where('group_id', $groupId)
-            ->where('user_id', Auth::id())
+            ->where('user_id', $request->attributes->get('user_id'))
             ->where('member_role', 'admin')
             ->where('is_active', true)
             ->first();
@@ -314,7 +313,7 @@ class GroupMemberController extends Controller
             ], 404);
         }
 
-        if ($userId == Auth::id()) {
+        if ($userId == $request->attributes->get('user_id')) {
             return response()->json([
                 'status' => 'error',
                 'message' => 'Cannot change your own role'
@@ -325,15 +324,15 @@ class GroupMemberController extends Controller
 
         return response()->json([
             'status' => 'success',
-            'data' => $targetMembership->fresh(['group', 'user']),
+            'data' => $targetMembership->fresh(['group']),
             'message' => 'Member role updated successfully'
         ]);
     }
 
-    public function removeMember(string $groupId, string $userId): JsonResponse
+    public function removeMember(Request $request, string $groupId, string $userId): JsonResponse
     {
         $removerMembership = GroupMember::where('group_id', $groupId)
-            ->where('user_id', Auth::id())
+            ->where('user_id', $request->attributes->get('user_id'))
             ->where('is_active', true)
             ->first();
 
@@ -356,7 +355,7 @@ class GroupMemberController extends Controller
             ], 404);
         }
 
-        if ($userId == Auth::id()) {
+        if ($userId == $request->attributes->get('user_id')) {
             return response()->json([
                 'status' => 'error',
                 'message' => 'Cannot remove yourself. Use leave group instead.'
@@ -390,7 +389,7 @@ class GroupMemberController extends Controller
         }
 
         $userMembership = GroupMember::where('group_id', $groupId)
-            ->where('user_id', Auth::id())
+            ->where('user_id', $request->attributes->get('user_id'))
             ->where('is_active', true)
             ->first();
 
@@ -401,8 +400,7 @@ class GroupMemberController extends Controller
             ], 403);
         }
 
-        $query = GroupMember::with(['user'])
-            ->where('group_id', $groupId)
+        $query = GroupMember::where('group_id', $groupId)
             ->where('is_active', true);
 
         if ($request->has('role')) {
