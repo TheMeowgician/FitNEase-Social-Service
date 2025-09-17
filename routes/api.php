@@ -7,14 +7,14 @@ use App\Http\Controllers\GroupMemberController;
 use App\Http\Controllers\GroupWorkoutController;
 
 Route::get('/user', function (Request $request) {
-    return $request->user();
-})->middleware('auth:sanctum');
+    return response()->json($request->attributes->get('user'));
+})->middleware('auth.api');
 
 Route::get('/health', function () {
     return response()->json(['status' => 'OK', 'service' => 'fitnease-social']);
 });
 
-Route::prefix('social')->middleware('auth:sanctum')->group(function () {
+Route::prefix('social')->middleware('auth.api')->group(function () {
 
     // Group Management
     Route::apiResource('groups', GroupController::class);
