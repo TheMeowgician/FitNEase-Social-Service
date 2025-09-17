@@ -7,10 +7,10 @@ use App\Models\GroupMember;
 use App\Models\GroupWorkoutEvaluation;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
-use Illuminate\Support\Facades\Auth;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Validator;
-use GuzzleHttp\Client;
+use App\Services\AuthService;
+use App\Services\CommunicationsService;
 use Carbon\Carbon;
 
 class GroupController extends Controller
@@ -67,7 +67,7 @@ class GroupController extends Controller
             $group = Group::create([
                 'group_name' => $request->group_name,
                 'description' => $request->description,
-                'created_by' => Auth::id(),
+                'created_by' => $request->attributes->get('user_id'),
                 'max_members' => $request->max_members ?? 10,
                 'is_private' => $request->is_private ?? false,
                 'group_image' => $request->group_image
@@ -75,13 +75,13 @@ class GroupController extends Controller
 
             GroupMember::create([
                 'group_id' => $group->group_id,
-                'user_id' => Auth::id(),
+                'user_id' => $request->attributes->get('user_id'),
                 'member_role' => 'admin'
             ]);
 
             DB::commit();
 
-            $this->notifyGroupCreation($group);
+            $this->notifyGroupCreation($request, $group);
 
             return response()->json([
                 'status' => 'success',
@@ -115,7 +115,7 @@ class GroupController extends Controller
 
         if ($group->is_private) {
             $membership = GroupMember::where('group_id', $groupId)
-                ->where('user_id', Auth::id())
+                ->where('user_id', $request->attributes->get('user_id'))
                 ->where('is_active', true)
                 ->first();
 
@@ -128,7 +128,7 @@ class GroupController extends Controller
         }
 
         $groupData = $group->toArray();
-        $groupData['user_membership'] = $this->getUserMembership($groupId, Auth::id());
+        $groupData['user_membership'] = $this->getUserMembership($groupId, $request->attributes->get('user_id'));
         $groupData['activity_level'] = $this->calculateGroupActivityLevel($groupId);
 
         return response()->json([
@@ -150,7 +150,7 @@ class GroupController extends Controller
         }
 
         $membership = GroupMember::where('group_id', $groupId)
-            ->where('user_id', Auth::id())
+            ->where('user_id', $request->attributes->get('user_id'))
             ->where('is_active', true)
             ->first();
 
@@ -200,7 +200,7 @@ class GroupController extends Controller
         }
 
         $membership = GroupMember::where('group_id', $groupId)
-            ->where('user_id', Auth::id())
+            ->where('user_id', $request->attributes->get('user_id'))
             ->where('member_role', 'admin')
             ->where('is_active', true)
             ->first();
@@ -222,7 +222,7 @@ class GroupController extends Controller
 
     public function discoverGroups(Request $request): JsonResponse
     {
-        $userId = Auth::id();
+        $userId = $request->attributes->get('user_id');
 
         $userJoinedGroups = GroupMember::where('user_id', $userId)
             ->where('is_active', true)
@@ -309,7 +309,7 @@ class GroupController extends Controller
         }
 
         $membership = GroupMember::where('group_id', $groupId)
-            ->where('user_id', Auth::id())
+            ->where('user_id', $request->attributes->get('user_id'))
             ->where('is_active', true)
             ->first();
 
@@ -377,20 +377,17 @@ class GroupController extends Controller
         ] : ['is_member' => false];
     }
 
-    private function notifyGroupCreation(Group $group): void
+    private function notifyGroupCreation(Request $request, Group $group): void
     {
-        try {
-            $client = new Client();
-            $client->post(env('COMMS_SERVICE_URL') . '/comms/group-notification', [
-                'json' => [
-                    'type' => 'group_created',
-                    'group_id' => $group->group_id,
-                    'group_name' => $group->group_name,
-                    'created_by' => $group->created_by
-                ]
+        $token = $request->bearerToken();
+        if ($token) {
+            $commsService = new CommunicationsService();
+            $commsService->sendGroupNotification($token, [
+                'type' => 'group_created',
+                'group_id' => $group->group_id,
+                'group_name' => $group->group_name,
+                'created_by' => $group->created_by
             ]);
-        } catch (\Exception $e) {
-            \Log::warning('Failed to notify group creation: ' . $e->getMessage());
         }
     }
 }
