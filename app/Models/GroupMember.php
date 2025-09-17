@@ -31,10 +31,9 @@ class GroupMember extends Model
         return $this->belongsTo(Group::class, 'group_id', 'group_id');
     }
 
-    public function user()
-    {
-        return $this->belongsTo(User::class, 'user_id', 'user_id');
-    }
+    // Note: In microservices architecture, we don't establish direct relationships
+    // with external service models. Use user_id field to reference user ID
+    // and fetch user details via AuthService when needed.
 
     public function scopeActive($query)
     {

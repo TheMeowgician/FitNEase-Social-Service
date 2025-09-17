@@ -45,10 +45,9 @@ class Group extends Model
         return $this->hasMany(GroupWorkoutEvaluation::class, 'group_id', 'group_id');
     }
 
-    public function creator()
-    {
-        return $this->belongsTo(User::class, 'created_by', 'user_id');
-    }
+    // Note: In microservices architecture, we don't establish direct relationships
+    // with external service models. Use created_by field to reference user ID
+    // and fetch user details via AuthService when needed.
 
     public function admins()
     {

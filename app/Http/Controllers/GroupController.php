@@ -17,7 +17,7 @@ class GroupController extends Controller
 {
     public function index(Request $request): JsonResponse
     {
-        $query = Group::with(['activeMembers', 'creator'])
+        $query = Group::with(['activeMembers'])
             ->active()
             ->public();
 
@@ -85,7 +85,7 @@ class GroupController extends Controller
 
             return response()->json([
                 'status' => 'success',
-                'data' => $group->load(['activeMembers', 'creator']),
+                'data' => $group->load(['activeMembers']),
                 'message' => 'Group created successfully'
             ], 201);
 
@@ -101,7 +101,7 @@ class GroupController extends Controller
 
     public function show(string $groupId): JsonResponse
     {
-        $group = Group::with(['activeMembers.user', 'creator', 'workoutEvaluations'])
+        $group = Group::with(['activeMembers', 'workoutEvaluations'])
             ->where('group_id', $groupId)
             ->active()
             ->first();
@@ -183,7 +183,7 @@ class GroupController extends Controller
 
         return response()->json([
             'status' => 'success',
-            'data' => $group->fresh(['activeMembers', 'creator']),
+            'data' => $group->fresh(['activeMembers']),
             'message' => 'Group updated successfully'
         ]);
     }
@@ -228,7 +228,7 @@ class GroupController extends Controller
             ->where('is_active', true)
             ->pluck('group_id');
 
-        $recommendedGroups = Group::with(['activeMembers', 'creator'])
+        $recommendedGroups = Group::with(['activeMembers'])
             ->active()
             ->public()
             ->withAvailableSlots()
@@ -244,7 +244,7 @@ class GroupController extends Controller
                 'member_count' => $group->current_member_count,
                 'max_members' => $group->max_members,
                 'activity_level' => $this->calculateGroupActivityLevel($group->group_id),
-                'created_by' => $group->creator,
+                'created_by' => $group->created_by,
                 'group_image' => $group->group_image
             ];
         });
@@ -273,7 +273,7 @@ class GroupController extends Controller
             ], 422);
         }
 
-        $query = Group::with(['activeMembers', 'creator'])
+        $query = Group::with(['activeMembers'])
             ->active()
             ->public();
 
@@ -320,15 +320,13 @@ class GroupController extends Controller
             ], 403);
         }
 
-        $recentEvaluations = GroupWorkoutEvaluation::with(['user'])
-            ->where('group_id', $groupId)
+        $recentEvaluations = GroupWorkoutEvaluation::where('group_id', $groupId)
             ->recent(30)
             ->latest()
             ->limit(20)
             ->get();
 
-        $recentMembers = GroupMember::with(['user'])
-            ->where('group_id', $groupId)
+        $recentMembers = GroupMember::where('group_id', $groupId)
             ->where('is_active', true)
             ->latest('joined_at')
             ->limit(5)
