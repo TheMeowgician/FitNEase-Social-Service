@@ -10,6 +10,10 @@ Route::get('/user', function (Request $request) {
     return $request->user();
 })->middleware('auth:sanctum');
 
+Route::get('/health', function () {
+    return response()->json(['status' => 'OK', 'service' => 'fitnease-social']);
+});
+
 Route::prefix('social')->middleware('auth:sanctum')->group(function () {
 
     // Group Management
