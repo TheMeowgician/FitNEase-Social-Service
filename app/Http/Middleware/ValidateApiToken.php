@@ -23,6 +23,23 @@ class ValidateApiToken
             return response()->json(['error' => 'No token provided'], 401);
         }
 
+        // TEMPORARY: Allow test token for demonstration purposes
+        if ($token === 'test-demo-token-123') {
+            $request->attributes->set('user', [
+                'user_id' => 1,
+                'name' => 'Test User',
+                'email' => 'test@example.com'
+            ]);
+            $request->attributes->set('user_id', 1);
+
+            Log::info('Using test demo token for API testing', [
+                'user_id' => 1,
+                'service' => 'fitnease-social'
+            ]);
+
+            return $next($request);
+        }
+
         try {
             $authServiceUrl = env('AUTH_SERVICE_URL');
 
