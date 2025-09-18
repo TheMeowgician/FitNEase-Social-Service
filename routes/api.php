@@ -5,6 +5,9 @@ use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\GroupController;
 use App\Http\Controllers\GroupMemberController;
 use App\Http\Controllers\GroupWorkoutController;
+use App\Http\Controllers\ServiceTestController;
+use App\Http\Controllers\ServiceCommunicationTestController;
+use App\Http\Controllers\ServiceIntegrationDemoController;
 
 Route::get('/user', function (Request $request) {
     return response()->json($request->attributes->get('user'));
@@ -47,4 +50,22 @@ Route::prefix('social')->middleware('auth.api')->group(function () {
     Route::get('group-search', [GroupController::class, 'searchGroups']);
     Route::get('group-activity/{groupId}', [GroupController::class, 'getGroupActivity']);
 
+});
+
+// Service Communication Testing Routes (Protected)
+Route::middleware('auth.api')->group(function () {
+    Route::get('/test-services', [ServiceTestController::class, 'testAllServices']);
+    Route::get('/test-service/{serviceName}', [ServiceTestController::class, 'testSpecificService']);
+    Route::get('/service-test/connectivity', [ServiceCommunicationTestController::class, 'testServiceConnectivity']);
+    Route::get('/service-test/communications', [ServiceCommunicationTestController::class, 'testIncomingCommunications']);
+    Route::get('/service-test/token-validation', [ServiceCommunicationTestController::class, 'testSocialTokenValidation']);
+});
+
+// Service Integration Demo Routes (Public - No Auth Required)
+Route::prefix('demo')->group(function () {
+    Route::get('/integrations', [ServiceIntegrationDemoController::class, 'getServiceIntegrationOverview']);
+    Route::get('/tracking-service', [ServiceIntegrationDemoController::class, 'demoTrackingServiceCall']);
+    Route::get('/content-service', [ServiceIntegrationDemoController::class, 'demoContentServiceCall']);
+    Route::get('/communications-service', [ServiceIntegrationDemoController::class, 'demoCommsServiceCall']);
+    Route::get('/engagement-service', [ServiceIntegrationDemoController::class, 'demoEngagementServiceCall']);
 });
