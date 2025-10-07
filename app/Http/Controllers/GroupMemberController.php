@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Group;
 use App\Models\GroupMember;
+use App\Services\AuthService;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\DB;
@@ -409,6 +410,29 @@ class GroupMemberController extends Controller
 
         $members = $query->latest('joined_at')
             ->paginate($request->get('per_page', 20));
+
+        // Enrich members with user details from auth service
+        $authService = new AuthService();
+        $token = $request->bearerToken();
+
+        $membersWithUserDetails = $members->getCollection()->map(function($member) use ($authService, $token) {
+            $userProfile = $authService->getUserProfile($token, $member->user_id);
+
+            if ($userProfile) {
+                $member->username = $userProfile['username'] ?? "User {$member->user_id}";
+                $member->first_name = $userProfile['first_name'] ?? null;
+                $member->last_name = $userProfile['last_name'] ?? null;
+                $member->profile_picture = $userProfile['profile_picture'] ?? null;
+            } else {
+                // If auth service fails, use user_id as username
+                $member->username = "User {$member->user_id}";
+                $member->profile_picture = null;
+            }
+
+            return $member;
+        });
+
+        $members->setCollection($membersWithUserDetails);
 
         return response()->json([
             'status' => 'success',

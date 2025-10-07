@@ -27,7 +27,7 @@ class AuthService
                 'token_prefix' => substr($token, 0, 10) . '...'
             ]);
 
-            $response = Http::timeout(10)->withHeaders([
+            $response = Http::timeout(5)->withHeaders([
                 'Authorization' => 'Bearer ' . $token,
                 'Accept' => 'application/json',
             ])->get($this->baseUrl . "/api/auth/user-profile/{$userId}");

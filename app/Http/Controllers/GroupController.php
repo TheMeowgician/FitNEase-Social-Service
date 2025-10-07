@@ -18,8 +18,18 @@ class GroupController extends Controller
     public function index(Request $request): JsonResponse
     {
         $query = Group::with(['activeMembers'])
-            ->active()
-            ->public();
+            ->active();
+
+        // If user_id is provided, show all groups the user is a member of (public and private)
+        if ($request->has('user_id')) {
+            $userId = $request->get('user_id');
+            $query->whereHas('activeMembers', function($q) use ($userId) {
+                $q->where('user_id', $userId);
+            });
+        } else {
+            // Otherwise, only show public groups for discovery
+            $query->public();
+        }
 
         if ($request->has('search')) {
             $search = $request->get('search');
@@ -99,7 +109,7 @@ class GroupController extends Controller
         }
     }
 
-    public function show(string $groupId): JsonResponse
+    public function show(Request $request, string $groupId): JsonResponse
     {
         $group = Group::with(['activeMembers', 'workoutEvaluations'])
             ->where('group_id', $groupId)
@@ -188,7 +198,7 @@ class GroupController extends Controller
         ]);
     }
 
-    public function destroy(string $groupId): JsonResponse
+    public function destroy(Request $request, string $groupId): JsonResponse
     {
         $group = Group::where('group_id', $groupId)->active()->first();
 
@@ -297,7 +307,7 @@ class GroupController extends Controller
         ]);
     }
 
-    public function getGroupActivity(string $groupId): JsonResponse
+    public function getGroupActivity(Request $request, string $groupId): JsonResponse
     {
         $group = Group::where('group_id', $groupId)->active()->first();
 
