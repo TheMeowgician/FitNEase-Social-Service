@@ -504,4 +504,237 @@ class GroupController extends Controller
             'message' => 'Group workout invitation sent to all active members'
         ]);
     }
+
+    /**
+     * Update member status in workout lobby
+     */
+    public function updateLobbyStatus(Request $request, string $sessionId): JsonResponse
+    {
+        $userId = $request->attributes->get('user_id');
+
+        $validator = Validator::make($request->all(), [
+            'status' => 'required|in:waiting,ready',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Validation failed',
+                'errors' => $validator->errors()
+            ], 400);
+        }
+
+        // Get user info
+        $authService = new AuthService();
+        $userProfile = $authService->getUserProfile($request->bearerToken(), $userId);
+
+        $userName = 'Unknown User';
+        if ($userProfile) {
+            if (!empty($userProfile['full_name'])) {
+                $userName = $userProfile['full_name'];
+            } elseif (!empty($userProfile['first_name']) || !empty($userProfile['last_name'])) {
+                $userName = trim(($userProfile['first_name'] ?? '') . ' ' . ($userProfile['last_name'] ?? ''));
+            } elseif (!empty($userProfile['username'])) {
+                $userName = $userProfile['username'];
+            } elseif (!empty($userProfile['email'])) {
+                $userName = explode('@', $userProfile['email'])[0];
+            }
+        }
+
+        Log::info('Broadcasting member status update', [
+            'session_id' => $sessionId,
+            'user_id' => $userId,
+            'name' => $userName,
+            'status' => $request->status
+        ]);
+
+        // Broadcast status update to lobby
+        broadcast(new \App\Events\MemberStatusUpdate(
+            $sessionId,
+            $userId,
+            $userName,
+            $request->status
+        ));
+
+        return response()->json([
+            'status' => 'success',
+            'message' => 'Status updated successfully'
+        ]);
+    }
+
+    /**
+     * Start workout for all members in lobby
+     */
+    public function startWorkout(Request $request, string $sessionId): JsonResponse
+    {
+        $userId = $request->attributes->get('user_id');
+
+        Log::info('Starting workout for all members', [
+            'session_id' => $sessionId,
+            'initiator_id' => $userId,
+            'start_time' => time()
+        ]);
+
+        // Broadcast workout start to all members in lobby
+        broadcast(new \App\Events\WorkoutStarted(
+            $sessionId,
+            time()
+        ));
+
+        return response()->json([
+            'status' => 'success',
+            'data' => [
+                'session_id' => $sessionId,
+                'start_time' => time()
+            ],
+            'message' => 'Workout started for all members'
+        ]);
+    }
+
+    /**
+     * Pause workout for all members in session
+     */
+    public function pauseWorkout(Request $request, string $sessionId): JsonResponse
+    {
+        $userId = $request->attributes->get('user_id');
+
+        // Get user info
+        $authService = new AuthService();
+        $userProfile = $authService->getUserProfile($request->bearerToken(), $userId);
+
+        $userName = 'Unknown User';
+        if ($userProfile) {
+            if (!empty($userProfile['full_name'])) {
+                $userName = $userProfile['full_name'];
+            } elseif (!empty($userProfile['first_name']) || !empty($userProfile['last_name'])) {
+                $userName = trim(($userProfile['first_name'] ?? '') . ' ' . ($userProfile['last_name'] ?? ''));
+            } elseif (!empty($userProfile['username'])) {
+                $userName = $userProfile['username'];
+            } elseif (!empty($userProfile['email'])) {
+                $userName = explode('@', $userProfile['email'])[0];
+            }
+        }
+
+        Log::info('Pausing workout for all members', [
+            'session_id' => $sessionId,
+            'paused_by' => $userId,
+            'paused_by_name' => $userName,
+            'paused_at' => time()
+        ]);
+
+        // Broadcast workout pause to all members in session
+        broadcast(new \App\Events\WorkoutPaused(
+            $sessionId,
+            $userId,
+            $userName,
+            time()
+        ));
+
+        return response()->json([
+            'status' => 'success',
+            'data' => [
+                'session_id' => $sessionId,
+                'paused_at' => time()
+            ],
+            'message' => 'Workout paused for all members'
+        ]);
+    }
+
+    /**
+     * Resume workout for all members in session
+     */
+    public function resumeWorkout(Request $request, string $sessionId): JsonResponse
+    {
+        $userId = $request->attributes->get('user_id');
+
+        // Get user info
+        $authService = new AuthService();
+        $userProfile = $authService->getUserProfile($request->bearerToken(), $userId);
+
+        $userName = 'Unknown User';
+        if ($userProfile) {
+            if (!empty($userProfile['full_name'])) {
+                $userName = $userProfile['full_name'];
+            } elseif (!empty($userProfile['first_name']) || !empty($userProfile['last_name'])) {
+                $userName = trim(($userProfile['first_name'] ?? '') . ' ' . ($userProfile['last_name'] ?? ''));
+            } elseif (!empty($userProfile['username'])) {
+                $userName = $userProfile['username'];
+            } elseif (!empty($userProfile['email'])) {
+                $userName = explode('@', $userProfile['email'])[0];
+            }
+        }
+
+        Log::info('Resuming workout for all members', [
+            'session_id' => $sessionId,
+            'resumed_by' => $userId,
+            'resumed_by_name' => $userName,
+            'resumed_at' => time()
+        ]);
+
+        // Broadcast workout resume to all members in session
+        broadcast(new \App\Events\WorkoutResumed(
+            $sessionId,
+            $userId,
+            $userName,
+            time()
+        ));
+
+        return response()->json([
+            'status' => 'success',
+            'data' => [
+                'session_id' => $sessionId,
+                'resumed_at' => time()
+            ],
+            'message' => 'Workout resumed for all members'
+        ]);
+    }
+
+    /**
+     * Stop workout for all members in session
+     */
+    public function stopWorkout(Request $request, string $sessionId): JsonResponse
+    {
+        $userId = $request->attributes->get('user_id');
+
+        // Get user info
+        $authService = new AuthService();
+        $userProfile = $authService->getUserProfile($request->bearerToken(), $userId);
+
+        $userName = 'Unknown User';
+        if ($userProfile) {
+            if (!empty($userProfile['full_name'])) {
+                $userName = $userProfile['full_name'];
+            } elseif (!empty($userProfile['first_name']) || !empty($userProfile['last_name'])) {
+                $userName = trim(($userProfile['first_name'] ?? '') . ' ' . ($userProfile['last_name'] ?? ''));
+            } elseif (!empty($userProfile['username'])) {
+                $userName = $userProfile['username'];
+            } elseif (!empty($userProfile['email'])) {
+                $userName = explode('@', $userProfile['email'])[0];
+            }
+        }
+
+        Log::info('Stopping workout for all members', [
+            'session_id' => $sessionId,
+            'stopped_by' => $userId,
+            'stopped_by_name' => $userName,
+            'stopped_at' => time()
+        ]);
+
+        // Broadcast workout stop to all members in session
+        broadcast(new \App\Events\WorkoutStopped(
+            $sessionId,
+            $userId,
+            $userName,
+            time()
+        ));
+
+        return response()->json([
+            'status' => 'success',
+            'data' => [
+                'session_id' => $sessionId,
+                'stopped_at' => time()
+            ],
+            'message' => 'Workout stopped for all members'
+        ]);
+    }
 }

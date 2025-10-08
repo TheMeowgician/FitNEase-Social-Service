@@ -52,6 +52,15 @@ Route::prefix('social')->middleware('auth.api')->group(function () {
     Route::get('groups/{groupId}/popular-workouts', [GroupWorkoutController::class, 'getPopularWorkouts']);
     Route::post('groups/{groupId}/initiate-workout', [GroupController::class, 'initiateGroupWorkout']);
 
+    // Workout Lobby
+    Route::post('lobby/{sessionId}/status', [GroupController::class, 'updateLobbyStatus']);
+    Route::post('lobby/{sessionId}/start', [GroupController::class, 'startWorkout']);
+
+    // Workout Session Control
+    Route::post('session/{sessionId}/pause', [GroupController::class, 'pauseWorkout']);
+    Route::post('session/{sessionId}/resume', [GroupController::class, 'resumeWorkout']);
+    Route::post('session/{sessionId}/stop', [GroupController::class, 'stopWorkout']);
+
     // Social Discovery
     Route::get('discover-groups', [GroupController::class, 'discoverGroups']);
     Route::get('group-search', [GroupController::class, 'searchGroups']);

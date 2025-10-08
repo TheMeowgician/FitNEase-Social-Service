@@ -32,3 +32,26 @@ Broadcast::channel('group.{groupId}', function ($user, $groupId) {
 
     return $result;
 });
+
+// Workout lobby channel - Anyone with valid session can join
+Broadcast::channel('lobby.{sessionId}', function ($user, $sessionId) {
+    Log::info('Broadcasting auth for lobby channel', [
+        'user_id' => $user->id ?? 'null',
+        'session_id' => $sessionId
+    ]);
+
+    // Allow any authenticated user to join lobby
+    // In production, you might want to verify they were invited
+    return true;
+});
+
+// Workout session channel - For real-time workout control (pause/resume)
+Broadcast::channel('session.{sessionId}', function ($user, $sessionId) {
+    Log::info('Broadcasting auth for session channel', [
+        'user_id' => $user->id ?? 'null',
+        'session_id' => $sessionId
+    ]);
+
+    // Allow any authenticated user to join session
+    return true;
+});
