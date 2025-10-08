@@ -8,6 +8,12 @@ use App\Http\Controllers\GroupWorkoutController;
 use App\Http\Controllers\ServiceTestController;
 use App\Http\Controllers\ServiceCommunicationTestController;
 use App\Http\Controllers\ServiceIntegrationDemoController;
+use Illuminate\Support\Facades\Broadcast;
+
+// Broadcasting Authentication Route - Must use auth.api middleware
+Route::post('/broadcasting/auth', function (Request $request) {
+    return Broadcast::auth($request);
+})->middleware('auth.api');
 
 Route::get('/user', function (Request $request) {
     return response()->json($request->attributes->get('user'));
@@ -44,6 +50,7 @@ Route::prefix('social')->middleware('auth.api')->group(function () {
     Route::post('groups/{groupId}/workouts/{workoutId}/join', [GroupWorkoutController::class, 'joinGroupWorkout']);
     Route::get('groups/{groupId}/workouts/{workoutId}/evaluations', [GroupWorkoutController::class, 'getWorkoutEvaluations']);
     Route::get('groups/{groupId}/popular-workouts', [GroupWorkoutController::class, 'getPopularWorkouts']);
+    Route::post('groups/{groupId}/initiate-workout', [GroupController::class, 'initiateGroupWorkout']);
 
     // Social Discovery
     Route::get('discover-groups', [GroupController::class, 'discoverGroups']);

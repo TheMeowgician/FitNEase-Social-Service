@@ -6,6 +6,7 @@ use Closure;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
+use Illuminate\Support\Facades\Auth;
 use Symfony\Component\HttpFoundation\Response;
 
 class ValidateApiToken
@@ -71,6 +72,28 @@ class ValidateApiToken
                 $request->attributes->set('user_id', $userData['user_id'] ?? null);
                 $request->attributes->set('user_email', $userData['email'] ?? null);
                 $request->attributes->set('user_abilities', $userData['abilities'] ?? []);
+
+                // Set user for broadcasting authentication ONLY for broadcasting routes
+                $path = $request->path();
+                Log::info('Checking path for broadcasting', [
+                    'path' => $path,
+                    'is_broadcasting' => str_contains($path, 'broadcasting')
+                ]);
+
+                if (str_contains($path, 'broadcasting')) {
+                    Log::info('Setting Auth user for broadcasting route', [
+                        'user_id' => $userData['user_id'] ?? null,
+                        'email' => $userData['email'] ?? null,
+                        'token_prefix' => substr($token, 0, 20) . '...'
+                    ]);
+                    // Create a User instance for Laravel's broadcasting
+                    $user = new \App\Models\User();
+                    $user->id = $userData['user_id'] ?? null;
+                    $user->email = $userData['email'] ?? null;
+                    $user->name = $userData['name'] ?? $userData['email'] ?? 'User';
+                    $user->exists = true; // Mark as existing user
+                    Auth::setUser($user);
+                }
 
                 return $next($request);
             }

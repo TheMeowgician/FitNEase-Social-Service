@@ -8,10 +8,13 @@ use App\Models\GroupWorkoutEvaluation;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
 use App\Services\AuthService;
 use App\Services\CommunicationsService;
+use App\Events\GroupWorkoutInvitation;
 use Carbon\Carbon;
+use Illuminate\Support\Str;
 
 class GroupController extends Controller
 {
@@ -397,5 +400,108 @@ class GroupController extends Controller
                 'created_by' => $group->created_by
             ]);
         }
+    }
+
+    public function initiateGroupWorkout(Request $request, string $groupId): JsonResponse
+    {
+        $validator = Validator::make($request->all(), [
+            'workout_data' => 'required|array',
+            'workout_data.workout_format' => 'required|string',
+            'workout_data.exercises' => 'required|array',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Validation failed',
+                'errors' => $validator->errors()
+            ], 422);
+        }
+
+        // Check if group exists and user is a member
+        $group = Group::where('group_id', $groupId)->active()->first();
+
+        if (!$group) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Group not found'
+            ], 404);
+        }
+
+        $userId = $request->attributes->get('user_id');
+        $membership = GroupMember::where('group_id', $groupId)
+            ->where('user_id', $userId)
+            ->where('is_active', true)
+            ->first();
+
+        if (!$membership) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'You must be a member of this group to initiate a workout'
+            ], 403);
+        }
+
+        // Get user info from auth service
+        $authService = new AuthService();
+        $userProfile = $authService->getUserProfile($request->bearerToken(), $userId);
+
+        Log::info('User profile for initiator', [
+            'user_id' => $userId,
+            'profile_exists' => $userProfile !== null,
+            'has_data' => isset($userProfile['data']),
+            'profile_data' => $userProfile
+        ]);
+
+        // Try to get full name from profile
+        $initiatorName = 'Unknown User';
+        // AuthService returns data directly, not wrapped in 'data' key
+        if ($userProfile) {
+            $data = $userProfile;
+
+            Log::info('Extracting initiator name', [
+                'full_name' => $data['full_name'] ?? 'not set',
+                'first_name' => $data['first_name'] ?? 'not set',
+                'last_name' => $data['last_name'] ?? 'not set',
+                'username' => $data['username'] ?? 'not set',
+                'email' => $data['email'] ?? 'not set'
+            ]);
+
+            if (!empty($data['full_name'])) {
+                $initiatorName = $data['full_name'];
+            } elseif (!empty($data['first_name']) || !empty($data['last_name'])) {
+                $initiatorName = trim(($data['first_name'] ?? '') . ' ' . ($data['last_name'] ?? ''));
+            } elseif (!empty($data['username'])) {
+                $initiatorName = $data['username'];
+            } elseif (!empty($data['email'])) {
+                $initiatorName = explode('@', $data['email'])[0];
+            } else {
+                $initiatorName = 'User ' . $userId;
+            }
+        }
+
+        Log::info('Final initiator name', ['name' => $initiatorName]);
+
+        // Generate unique session ID
+        $sessionId = Str::uuid()->toString();
+
+        // Broadcast the invitation to all group members
+        broadcast(new GroupWorkoutInvitation(
+            (int) $groupId,
+            $userId,
+            $initiatorName,
+            $request->workout_data,
+            $sessionId
+        ));
+
+        return response()->json([
+            'status' => 'success',
+            'data' => [
+                'session_id' => $sessionId,
+                'group_id' => $groupId,
+                'initiator_id' => $userId,
+                'workout_data' => $request->workout_data
+            ],
+            'message' => 'Group workout invitation sent to all active members'
+        ]);
     }
 }
