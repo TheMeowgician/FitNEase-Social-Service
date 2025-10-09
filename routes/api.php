@@ -55,6 +55,10 @@ Route::prefix('social')->middleware('auth.api')->group(function () {
     // Workout Lobby
     Route::post('lobby/{sessionId}/status', [GroupController::class, 'updateLobbyStatus']);
     Route::post('lobby/{sessionId}/start', [GroupController::class, 'startWorkout']);
+    Route::post('lobby/{sessionId}/invite', [GroupController::class, 'inviteMemberToLobby']);
+    Route::post('lobby/{sessionId}/broadcast-exercises', [GroupController::class, 'broadcastExercises']);
+    Route::post('lobby/{sessionId}/message', [GroupController::class, 'sendLobbyMessage']);
+    Route::post('lobby/{sessionId}/pass-initiator', [GroupController::class, 'passInitiatorRole']);
 
     // Workout Session Control
     Route::post('session/{sessionId}/pause', [GroupController::class, 'pauseWorkout']);

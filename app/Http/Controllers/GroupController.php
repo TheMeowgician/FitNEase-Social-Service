@@ -404,13 +404,32 @@ class GroupController extends Controller
 
     public function initiateGroupWorkout(Request $request, string $groupId): JsonResponse
     {
+        // Log incoming request data for debugging
+        Log::info('🚪 Incoming Group Workout Request', [
+            'group_id' => $groupId,
+            'all_data' => $request->all(),
+            'has_workout_data' => $request->has('workout_data'),
+            'workout_data_raw' => $request->input('workout_data'),
+            'workout_data_type' => gettype($request->input('workout_data')),
+            'workout_format' => $request->input('workout_data.workout_format'),
+            'exercises' => $request->input('workout_data.exercises'),
+            'content_type' => $request->header('Content-Type'),
+            'method' => $request->method()
+        ]);
+
         $validator = Validator::make($request->all(), [
             'workout_data' => 'required|array',
             'workout_data.workout_format' => 'required|string',
-            'workout_data.exercises' => 'required|array',
+            'workout_data.exercises' => 'present|array',  // Changed from 'required' to 'present' to allow empty arrays
         ]);
 
         if ($validator->fails()) {
+            Log::error('❌ Validation Failed', [
+                'errors' => $validator->errors()->toArray(),
+                'failed_rules' => $validator->failed(),
+                'request_data' => $request->all()
+            ]);
+
             return response()->json([
                 'status' => 'error',
                 'message' => 'Validation failed',
@@ -484,14 +503,12 @@ class GroupController extends Controller
         // Generate unique session ID
         $sessionId = Str::uuid()->toString();
 
-        // Broadcast the invitation to all group members
-        broadcast(new GroupWorkoutInvitation(
-            (int) $groupId,
-            $userId,
-            $initiatorName,
-            $request->workout_data,
-            $sessionId
-        ));
+        // Don't auto-broadcast - let the initiator manually invite members
+        Log::info('Lobby created, waiting for manual invitations', [
+            'group_id' => $groupId,
+            'initiator_id' => $userId,
+            'session_id' => $sessionId
+        ]);
 
         return response()->json([
             'status' => 'success',
@@ -501,7 +518,7 @@ class GroupController extends Controller
                 'initiator_id' => $userId,
                 'workout_data' => $request->workout_data
             ],
-            'message' => 'Group workout invitation sent to all active members'
+            'message' => 'Lobby created successfully. Use invite button to invite members.'
         ]);
     }
 
@@ -735,6 +752,263 @@ class GroupController extends Controller
                 'stopped_at' => time()
             ],
             'message' => 'Workout stopped for all members'
+        ]);
+    }
+
+    /**
+     * Resend lobby invitation to specific member
+     */
+    public function inviteMemberToLobby(Request $request, string $sessionId): JsonResponse
+    {
+        $validator = Validator::make($request->all(), [
+            'target_user_id' => 'required|integer',
+            'group_id' => 'required|integer',
+            'workout_data' => 'required|array',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Validation failed',
+                'errors' => $validator->errors()
+            ], 422);
+        }
+
+        $initiatorId = $request->attributes->get('user_id');
+        $targetUserId = $request->input('target_user_id');
+        $groupId = $request->input('group_id');
+        $workoutData = $request->input('workout_data');
+
+        // Get initiator info
+        $authService = new AuthService();
+        $initiatorProfile = $authService->getUserProfile($request->bearerToken(), $initiatorId);
+
+        $initiatorName = 'Unknown User';
+        if ($initiatorProfile) {
+            if (!empty($initiatorProfile['full_name'])) {
+                $initiatorName = $initiatorProfile['full_name'];
+            } elseif (!empty($initiatorProfile['first_name']) || !empty($initiatorProfile['last_name'])) {
+                $initiatorName = trim(($initiatorProfile['first_name'] ?? '') . ' ' . ($initiatorProfile['last_name'] ?? ''));
+            } elseif (!empty($initiatorProfile['username'])) {
+                $initiatorName = $initiatorProfile['username'];
+            }
+        }
+
+        Log::info('Sending lobby invitation to specific member', [
+            'session_id' => $sessionId,
+            'group_id' => $groupId,
+            'initiator_id' => $initiatorId,
+            'initiator_name' => $initiatorName,
+            'target_user_id' => $targetUserId
+        ]);
+
+        // Log before broadcast
+        Log::info('About to broadcast lobby invitation', [
+            'group_id' => $groupId,
+            'initiator_id' => $initiatorId,
+            'session_id' => $sessionId,
+            'channel' => "private-group.{$groupId}"
+        ]);
+
+        // Broadcast invitation to the group channel (the user should be subscribed)
+        broadcast(new GroupWorkoutInvitation(
+            (int) $groupId,
+            $initiatorId,
+            $initiatorName,
+            $workoutData,
+            $sessionId
+        ));
+
+        Log::info('Broadcast call completed for lobby invitation', [
+            'session_id' => $sessionId
+        ]);
+
+        return response()->json([
+            'status' => 'success',
+            'message' => 'Lobby invitation sent successfully'
+        ]);
+    }
+
+    /**
+     * Broadcast generated exercises to all lobby members
+     */
+    public function broadcastExercises(Request $request, string $sessionId): JsonResponse
+    {
+        $validator = Validator::make($request->all(), [
+            'workout_data' => 'required|array',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Validation failed',
+                'errors' => $validator->errors()
+            ], 422);
+        }
+
+        $userId = $request->attributes->get('user_id');
+
+        Log::info('Broadcasting generated exercises to lobby', [
+            'session_id' => $sessionId,
+            'initiator_id' => $userId,
+            'exercises_count' => count($request->workout_data['exercises'] ?? [])
+        ]);
+
+        // Broadcast exercises to all members in the lobby
+        broadcast(new \App\Events\ExercisesGenerated(
+            $sessionId,
+            $request->workout_data
+        ));
+
+        return response()->json([
+            'status' => 'success',
+            'message' => 'Exercises broadcast to all lobby members'
+        ]);
+    }
+
+    /**
+     * Send chat message in lobby
+     */
+    public function sendLobbyMessage(Request $request, string $sessionId): JsonResponse
+    {
+        $validator = Validator::make($request->all(), [
+            'message' => 'required|string|max:500',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Validation failed',
+                'errors' => $validator->errors()
+            ], 422);
+        }
+
+        $userId = $request->attributes->get('user_id');
+        $message = $request->input('message');
+
+        // Get user info
+        $authService = new AuthService();
+        $userProfile = $authService->getUserProfile($request->bearerToken(), $userId);
+
+        $userName = 'Unknown User';
+        if ($userProfile) {
+            // Prioritize username for chat display
+            if (!empty($userProfile['username'])) {
+                $userName = $userProfile['username'];
+            } elseif (!empty($userProfile['email'])) {
+                $userName = explode('@', $userProfile['email'])[0];
+            } elseif (!empty($userProfile['full_name'])) {
+                $userName = $userProfile['full_name'];
+            } elseif (!empty($userProfile['first_name']) || !empty($userProfile['last_name'])) {
+                $userName = trim(($userProfile['first_name'] ?? '') . ' ' . ($userProfile['last_name'] ?? ''));
+            }
+        }
+
+        // Generate unique message ID
+        $messageId = Str::uuid()->toString();
+        $timestamp = time();
+
+        Log::info('Broadcasting lobby chat message', [
+            'session_id' => $sessionId,
+            'user_id' => $userId,
+            'user_name' => $userName,
+            'message_id' => $messageId,
+            'message_length' => strlen($message)
+        ]);
+
+        // Broadcast message to all lobby members
+        broadcast(new \App\Events\LobbyMessageSent(
+            $sessionId,
+            $userId,
+            $userName,
+            $message,
+            $timestamp,
+            $messageId
+        ));
+
+        return response()->json([
+            'status' => 'success',
+            'data' => [
+                'message_id' => $messageId,
+                'timestamp' => $timestamp
+            ],
+            'message' => 'Message sent successfully'
+        ]);
+    }
+
+    /**
+     * Pass initiator role to another member in the lobby
+     */
+    public function passInitiatorRole(Request $request, string $sessionId): JsonResponse
+    {
+        $validator = Validator::make($request->all(), [
+            'new_initiator_id' => 'required|integer',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Validation failed',
+                'errors' => $validator->errors()
+            ], 422);
+        }
+
+        $currentInitiatorId = $request->attributes->get('user_id');
+        $newInitiatorId = $request->input('new_initiator_id');
+
+        // Get current initiator info
+        $authService = new AuthService();
+        $currentInitiatorProfile = $authService->getUserProfile($request->bearerToken(), $currentInitiatorId);
+
+        $currentInitiatorName = 'Unknown User';
+        if ($currentInitiatorProfile) {
+            if (!empty($currentInitiatorProfile['username'])) {
+                $currentInitiatorName = $currentInitiatorProfile['username'];
+            } elseif (!empty($currentInitiatorProfile['full_name'])) {
+                $currentInitiatorName = $currentInitiatorProfile['full_name'];
+            } elseif (!empty($currentInitiatorProfile['email'])) {
+                $currentInitiatorName = explode('@', $currentInitiatorProfile['email'])[0];
+            }
+        }
+
+        // Get new initiator info
+        $newInitiatorProfile = $authService->getUserProfile($request->bearerToken(), $newInitiatorId);
+
+        $newInitiatorName = 'Unknown User';
+        if ($newInitiatorProfile) {
+            if (!empty($newInitiatorProfile['username'])) {
+                $newInitiatorName = $newInitiatorProfile['username'];
+            } elseif (!empty($newInitiatorProfile['full_name'])) {
+                $newInitiatorName = $newInitiatorProfile['full_name'];
+            } elseif (!empty($newInitiatorProfile['email'])) {
+                $newInitiatorName = explode('@', $newInitiatorProfile['email'])[0];
+            }
+        }
+
+        Log::info('Passing initiator role in lobby', [
+            'session_id' => $sessionId,
+            'previous_initiator_id' => $currentInitiatorId,
+            'previous_initiator_name' => $currentInitiatorName,
+            'new_initiator_id' => $newInitiatorId,
+            'new_initiator_name' => $newInitiatorName
+        ]);
+
+        // Broadcast role transfer to all lobby members
+        broadcast(new \App\Events\PassInitiatorRole(
+            $sessionId,
+            $newInitiatorId,
+            $newInitiatorName,
+            $currentInitiatorId,
+            $currentInitiatorName
+        ));
+
+        return response()->json([
+            'status' => 'success',
+            'data' => [
+                'new_initiator_id' => $newInitiatorId,
+                'new_initiator_name' => $newInitiatorName
+            ],
+            'message' => 'Initiator role transferred successfully'
         ]);
     }
 }
