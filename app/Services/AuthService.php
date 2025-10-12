@@ -94,4 +94,55 @@ class AuthService
             return null;
         }
     }
+
+    /**
+     * Search for user by username
+     */
+    public function searchUserByUsername(string $token, string $username): ?array
+    {
+        try {
+            Log::info('Searching user by username from auth service', [
+                'service' => 'fitnease-social',
+                'target_service' => 'fitnease-auth',
+                'username' => $username
+            ]);
+
+            $response = Http::timeout(5)->withHeaders([
+                'Authorization' => 'Bearer ' . $token,
+                'Accept' => 'application/json',
+            ])->get($this->baseUrl . "/api/auth/user-by-username/{$username}");
+
+            if ($response->successful()) {
+                $userData = $response->json();
+
+                Log::info('User found by username', [
+                    'service' => 'fitnease-social',
+                    'target_service' => 'fitnease-auth',
+                    'username' => $username,
+                    'user_id' => $userData['user_id'] ?? null
+                ]);
+
+                return $userData;
+            }
+
+            Log::warning('User not found by username', [
+                'service' => 'fitnease-social',
+                'target_service' => 'fitnease-auth',
+                'username' => $username,
+                'status_code' => $response->status()
+            ]);
+
+            return null;
+
+        } catch (\Exception $e) {
+            Log::error('Error searching user by username', [
+                'service' => 'fitnease-social',
+                'target_service' => 'fitnease-auth',
+                'username' => $username,
+                'error' => $e->getMessage()
+            ]);
+
+            return null;
+        }
+    }
 }

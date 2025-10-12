@@ -141,13 +141,14 @@ class GroupMemberController extends Controller
     public function inviteUser(Request $request, string $groupId): JsonResponse
     {
         $validator = Validator::make($request->all(), [
-            'user_id' => 'required|integer'
+            'user_id' => 'required_without:username|integer',
+            'username' => 'required_without:user_id|string'
         ]);
 
         if ($validator->fails()) {
             return response()->json([
                 'status' => 'error',
-                'message' => 'Validation failed',
+                'message' => 'Validation failed. Provide either user_id or username.',
                 'errors' => $validator->errors()
             ], 422);
         }
@@ -180,8 +181,25 @@ class GroupMemberController extends Controller
             ], 400);
         }
 
+        // Resolve username to user_id if username is provided
+        $targetUserId = $request->user_id;
+        if ($request->has('username')) {
+            $authService = new AuthService();
+            $token = $request->bearerToken();
+            $userData = $authService->searchUserByUsername($token, $request->username);
+
+            if (!$userData || !isset($userData['user_id'])) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'User not found with username: ' . $request->username
+                ], 404);
+            }
+
+            $targetUserId = $userData['user_id'];
+        }
+
         $existingMembership = GroupMember::where('group_id', $groupId)
-            ->where('user_id', $request->user_id)
+            ->where('user_id', $targetUserId)
             ->where('is_active', true)
             ->first();
 
@@ -192,7 +210,7 @@ class GroupMemberController extends Controller
             ], 400);
         }
 
-        $this->notifyUserInvitation($group, $request->user_id, $request->attributes->get('user_id'));
+        $this->notifyUserInvitation($group, $targetUserId, $request->attributes->get('user_id'));
 
         return response()->json([
             'status' => 'success',
@@ -462,7 +480,7 @@ class GroupMemberController extends Controller
     {
         try {
             $client = new Client();
-            $client->post(env('COMMS_SERVICE_URL') . '/comms/group-invitation', [
+            $response = $client->post(env('COMMS_SERVICE_URL') . '/api/comms/group-invitation', [
                 'json' => [
                     'type' => 'group_invitation',
                     'group_id' => $group->group_id,
@@ -472,8 +490,18 @@ class GroupMemberController extends Controller
                     'group_code' => $group->group_code
                 ]
             ]);
+
+            \Log::info('Group invitation notification sent successfully', [
+                'group_id' => $group->group_id,
+                'invited_user_id' => $invitedUserId,
+                'inviter_user_id' => $inviterUserId
+            ]);
         } catch (\Exception $e) {
-            \Log::warning('Failed to notify user invitation: ' . $e->getMessage());
+            \Log::warning('Failed to notify user invitation: ' . $e->getMessage(), [
+                'group_id' => $group->group_id,
+                'invited_user_id' => $invitedUserId,
+                'error' => $e->getMessage()
+            ]);
         }
     }
 }

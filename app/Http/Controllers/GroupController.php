@@ -471,32 +471,8 @@ class GroupController extends Controller
             'profile_data' => $userProfile
         ]);
 
-        // Try to get full name from profile
-        $initiatorName = 'Unknown User';
-        // AuthService returns data directly, not wrapped in 'data' key
-        if ($userProfile) {
-            $data = $userProfile;
-
-            Log::info('Extracting initiator name', [
-                'full_name' => $data['full_name'] ?? 'not set',
-                'first_name' => $data['first_name'] ?? 'not set',
-                'last_name' => $data['last_name'] ?? 'not set',
-                'username' => $data['username'] ?? 'not set',
-                'email' => $data['email'] ?? 'not set'
-            ]);
-
-            if (!empty($data['full_name'])) {
-                $initiatorName = $data['full_name'];
-            } elseif (!empty($data['first_name']) || !empty($data['last_name'])) {
-                $initiatorName = trim(($data['first_name'] ?? '') . ' ' . ($data['last_name'] ?? ''));
-            } elseif (!empty($data['username'])) {
-                $initiatorName = $data['username'];
-            } elseif (!empty($data['email'])) {
-                $initiatorName = explode('@', $data['email'])[0];
-            } else {
-                $initiatorName = 'User ' . $userId;
-            }
-        }
+        // Get initiator name from profile
+        $initiatorName = $this->getUsernameFromProfile($userProfile, $userId);
 
         Log::info('Final initiator name', ['name' => $initiatorName]);
 
@@ -544,19 +520,7 @@ class GroupController extends Controller
         // Get user info
         $authService = new AuthService();
         $userProfile = $authService->getUserProfile($request->bearerToken(), $userId);
-
-        $userName = 'Unknown User';
-        if ($userProfile) {
-            if (!empty($userProfile['full_name'])) {
-                $userName = $userProfile['full_name'];
-            } elseif (!empty($userProfile['first_name']) || !empty($userProfile['last_name'])) {
-                $userName = trim(($userProfile['first_name'] ?? '') . ' ' . ($userProfile['last_name'] ?? ''));
-            } elseif (!empty($userProfile['username'])) {
-                $userName = $userProfile['username'];
-            } elseif (!empty($userProfile['email'])) {
-                $userName = explode('@', $userProfile['email'])[0];
-            }
-        }
+        $userName = $this->getUsernameFromProfile($userProfile, $userId);
 
         Log::info('Broadcasting member status update', [
             'session_id' => $sessionId,
@@ -618,19 +582,7 @@ class GroupController extends Controller
         // Get user info
         $authService = new AuthService();
         $userProfile = $authService->getUserProfile($request->bearerToken(), $userId);
-
-        $userName = 'Unknown User';
-        if ($userProfile) {
-            if (!empty($userProfile['full_name'])) {
-                $userName = $userProfile['full_name'];
-            } elseif (!empty($userProfile['first_name']) || !empty($userProfile['last_name'])) {
-                $userName = trim(($userProfile['first_name'] ?? '') . ' ' . ($userProfile['last_name'] ?? ''));
-            } elseif (!empty($userProfile['username'])) {
-                $userName = $userProfile['username'];
-            } elseif (!empty($userProfile['email'])) {
-                $userName = explode('@', $userProfile['email'])[0];
-            }
-        }
+        $userName = $this->getUsernameFromProfile($userProfile, $userId);
 
         Log::info('Pausing workout for all members', [
             'session_id' => $sessionId,
@@ -667,19 +619,7 @@ class GroupController extends Controller
         // Get user info
         $authService = new AuthService();
         $userProfile = $authService->getUserProfile($request->bearerToken(), $userId);
-
-        $userName = 'Unknown User';
-        if ($userProfile) {
-            if (!empty($userProfile['full_name'])) {
-                $userName = $userProfile['full_name'];
-            } elseif (!empty($userProfile['first_name']) || !empty($userProfile['last_name'])) {
-                $userName = trim(($userProfile['first_name'] ?? '') . ' ' . ($userProfile['last_name'] ?? ''));
-            } elseif (!empty($userProfile['username'])) {
-                $userName = $userProfile['username'];
-            } elseif (!empty($userProfile['email'])) {
-                $userName = explode('@', $userProfile['email'])[0];
-            }
-        }
+        $userName = $this->getUsernameFromProfile($userProfile, $userId);
 
         Log::info('Resuming workout for all members', [
             'session_id' => $sessionId,
@@ -716,19 +656,7 @@ class GroupController extends Controller
         // Get user info
         $authService = new AuthService();
         $userProfile = $authService->getUserProfile($request->bearerToken(), $userId);
-
-        $userName = 'Unknown User';
-        if ($userProfile) {
-            if (!empty($userProfile['full_name'])) {
-                $userName = $userProfile['full_name'];
-            } elseif (!empty($userProfile['first_name']) || !empty($userProfile['last_name'])) {
-                $userName = trim(($userProfile['first_name'] ?? '') . ' ' . ($userProfile['last_name'] ?? ''));
-            } elseif (!empty($userProfile['username'])) {
-                $userName = $userProfile['username'];
-            } elseif (!empty($userProfile['email'])) {
-                $userName = explode('@', $userProfile['email'])[0];
-            }
-        }
+        $userName = $this->getUsernameFromProfile($userProfile, $userId);
 
         Log::info('Stopping workout for all members', [
             'session_id' => $sessionId,
@@ -782,17 +710,7 @@ class GroupController extends Controller
         // Get initiator info
         $authService = new AuthService();
         $initiatorProfile = $authService->getUserProfile($request->bearerToken(), $initiatorId);
-
-        $initiatorName = 'Unknown User';
-        if ($initiatorProfile) {
-            if (!empty($initiatorProfile['full_name'])) {
-                $initiatorName = $initiatorProfile['full_name'];
-            } elseif (!empty($initiatorProfile['first_name']) || !empty($initiatorProfile['last_name'])) {
-                $initiatorName = trim(($initiatorProfile['first_name'] ?? '') . ' ' . ($initiatorProfile['last_name'] ?? ''));
-            } elseif (!empty($initiatorProfile['username'])) {
-                $initiatorName = $initiatorProfile['username'];
-            }
-        }
+        $initiatorName = $this->getUsernameFromProfile($initiatorProfile, $initiatorId);
 
         Log::info('Sending lobby invitation to specific member', [
             'session_id' => $sessionId,
@@ -959,31 +877,11 @@ class GroupController extends Controller
         // Get current initiator info
         $authService = new AuthService();
         $currentInitiatorProfile = $authService->getUserProfile($request->bearerToken(), $currentInitiatorId);
-
-        $currentInitiatorName = 'Unknown User';
-        if ($currentInitiatorProfile) {
-            if (!empty($currentInitiatorProfile['username'])) {
-                $currentInitiatorName = $currentInitiatorProfile['username'];
-            } elseif (!empty($currentInitiatorProfile['full_name'])) {
-                $currentInitiatorName = $currentInitiatorProfile['full_name'];
-            } elseif (!empty($currentInitiatorProfile['email'])) {
-                $currentInitiatorName = explode('@', $currentInitiatorProfile['email'])[0];
-            }
-        }
+        $currentInitiatorName = $this->getUsernameFromProfile($currentInitiatorProfile, $currentInitiatorId);
 
         // Get new initiator info
         $newInitiatorProfile = $authService->getUserProfile($request->bearerToken(), $newInitiatorId);
-
-        $newInitiatorName = 'Unknown User';
-        if ($newInitiatorProfile) {
-            if (!empty($newInitiatorProfile['username'])) {
-                $newInitiatorName = $newInitiatorProfile['username'];
-            } elseif (!empty($newInitiatorProfile['full_name'])) {
-                $newInitiatorName = $newInitiatorProfile['full_name'];
-            } elseif (!empty($newInitiatorProfile['email'])) {
-                $newInitiatorName = explode('@', $newInitiatorProfile['email'])[0];
-            }
-        }
+        $newInitiatorName = $this->getUsernameFromProfile($newInitiatorProfile, $newInitiatorId);
 
         Log::info('Passing initiator role in lobby', [
             'session_id' => $sessionId,
@@ -1010,5 +908,86 @@ class GroupController extends Controller
             ],
             'message' => 'Initiator role transferred successfully'
         ]);
+    }
+
+    /**
+     * Kick a user from the lobby
+     */
+    public function kickUserFromLobby(Request $request, string $sessionId): JsonResponse
+    {
+        $validator = Validator::make($request->all(), [
+            'user_id' => 'required|integer',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Validation failed',
+                'errors' => $validator->errors()
+            ], 422);
+        }
+
+        $initiatorId = $request->attributes->get('user_id');
+        $kickedUserId = $request->input('user_id');
+
+        // Prevent self-kick
+        if ($initiatorId === $kickedUserId) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'You cannot kick yourself from the lobby'
+            ], 400);
+        }
+
+        // Get kicked user info
+        $authService = new AuthService();
+        $kickedUserProfile = $authService->getUserProfile($request->bearerToken(), $kickedUserId);
+        $kickedUserName = $this->getUsernameFromProfile($kickedUserProfile, $kickedUserId);
+
+        Log::info('Kicking user from lobby', [
+            'session_id' => $sessionId,
+            'initiator_id' => $initiatorId,
+            'kicked_user_id' => $kickedUserId,
+            'kicked_user_name' => $kickedUserName
+        ]);
+
+        // Broadcast kick event to all lobby members
+        broadcast(new \App\Events\MemberKicked(
+            $sessionId,
+            $kickedUserId,
+            $kickedUserName
+        ));
+
+        return response()->json([
+            'status' => 'success',
+            'data' => [
+                'kicked_user_id' => $kickedUserId,
+                'kicked_user_name' => $kickedUserName
+            ],
+            'message' => 'User removed from lobby successfully'
+        ]);
+    }
+
+    /**
+     * Helper function to extract username from user profile
+     * Prioritizes username over other name fields for consistency
+     */
+    private function getUsernameFromProfile(?array $userProfile, int $userId = null): string
+    {
+        if (!$userProfile) {
+            return $userId ? 'User ' . $userId : 'Unknown User';
+        }
+
+        // Priority: username > email > full_name > first+last name
+        if (!empty($userProfile['username'])) {
+            return $userProfile['username'];
+        } elseif (!empty($userProfile['email'])) {
+            return explode('@', $userProfile['email'])[0];
+        } elseif (!empty($userProfile['full_name'])) {
+            return $userProfile['full_name'];
+        } elseif (!empty($userProfile['first_name']) || !empty($userProfile['last_name'])) {
+            return trim(($userProfile['first_name'] ?? '') . ' ' . ($userProfile['last_name'] ?? ''));
+        } else {
+            return $userId ? 'User ' . $userId : 'Unknown User';
+        }
     }
 }
