@@ -404,32 +404,13 @@ class GroupController extends Controller
 
     public function initiateGroupWorkout(Request $request, string $groupId): JsonResponse
     {
-        // Log incoming request data for debugging
-        Log::info('🚪 Incoming Group Workout Request', [
-            'group_id' => $groupId,
-            'all_data' => $request->all(),
-            'has_workout_data' => $request->has('workout_data'),
-            'workout_data_raw' => $request->input('workout_data'),
-            'workout_data_type' => gettype($request->input('workout_data')),
-            'workout_format' => $request->input('workout_data.workout_format'),
-            'exercises' => $request->input('workout_data.exercises'),
-            'content_type' => $request->header('Content-Type'),
-            'method' => $request->method()
-        ]);
-
         $validator = Validator::make($request->all(), [
             'workout_data' => 'required|array',
             'workout_data.workout_format' => 'required|string',
-            'workout_data.exercises' => 'present|array',  // Changed from 'required' to 'present' to allow empty arrays
+            'workout_data.exercises' => 'present|array',
         ]);
 
         if ($validator->fails()) {
-            Log::error('❌ Validation Failed', [
-                'errors' => $validator->errors()->toArray(),
-                'failed_rules' => $validator->failed(),
-                'request_data' => $request->all()
-            ]);
-
             return response()->json([
                 'status' => 'error',
                 'message' => 'Validation failed',
@@ -460,42 +441,54 @@ class GroupController extends Controller
             ], 403);
         }
 
-        // Get user info from auth service
-        $authService = new AuthService();
-        $userProfile = $authService->getUserProfile($request->bearerToken(), $userId);
+        try {
+            DB::beginTransaction();
 
-        Log::info('User profile for initiator', [
-            'user_id' => $userId,
-            'profile_exists' => $userProfile !== null,
-            'has_data' => isset($userProfile['data']),
-            'profile_data' => $userProfile
-        ]);
+            // Generate unique session ID
+            $sessionId = Str::uuid()->toString();
 
-        // Get initiator name from profile
-        $initiatorName = $this->getUsernameFromProfile($userProfile, $userId);
-
-        Log::info('Final initiator name', ['name' => $initiatorName]);
-
-        // Generate unique session ID
-        $sessionId = Str::uuid()->toString();
-
-        // Don't auto-broadcast - let the initiator manually invite members
-        Log::info('Lobby created, waiting for manual invitations', [
-            'group_id' => $groupId,
-            'initiator_id' => $userId,
-            'session_id' => $sessionId
-        ]);
-
-        return response()->json([
-            'status' => 'success',
-            'data' => [
+            // Create lobby in database
+            $lobby = \App\Models\WorkoutLobby::create([
                 'session_id' => $sessionId,
                 'group_id' => $groupId,
                 'initiator_id' => $userId,
-                'workout_data' => $request->workout_data
-            ],
-            'message' => 'Lobby created successfully. Use invite button to invite members.'
-        ]);
+                'workout_data' => $request->workout_data,
+                'status' => 'waiting',
+                'expires_at' => now()->addMinutes(30), // 30 minute expiry
+            ]);
+
+            // Add initiator as first member
+            $lobby->addMember($userId, 'waiting');
+
+            DB::commit();
+
+            Log::info('Lobby created in database', [
+                'session_id' => $sessionId,
+                'group_id' => $groupId,
+                'initiator_id' => $userId,
+                'lobby_id' => $lobby->id,
+            ]);
+
+            return response()->json([
+                'status' => 'success',
+                'data' => [
+                    'session_id' => $sessionId,
+                    'group_id' => $groupId,
+                    'initiator_id' => $userId,
+                    'workout_data' => $request->workout_data,
+                    'expires_at' => $lobby->expires_at->timestamp,
+                ],
+                'message' => 'Lobby created successfully. Use invite button to invite members.'
+            ]);
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error('Failed to create lobby', ['error' => $e->getMessage()]);
+
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Failed to create lobby'
+            ], 500);
+        }
     }
 
     /**
@@ -517,17 +510,41 @@ class GroupController extends Controller
             ], 400);
         }
 
+        // Find lobby
+        $lobby = \App\Models\WorkoutLobby::where('session_id', $sessionId)->first();
+
+        if (!$lobby) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Lobby not found'
+            ], 404);
+        }
+
         // Get user info
         $authService = new AuthService();
         $userProfile = $authService->getUserProfile($request->bearerToken(), $userId);
         $userName = $this->getUsernameFromProfile($userProfile, $userId);
 
-        Log::info('Broadcasting member status update', [
-            'session_id' => $sessionId,
-            'user_id' => $userId,
-            'name' => $userName,
-            'status' => $request->status
-        ]);
+        // Check if member exists, if not add them
+        $member = $lobby->members()->where('user_id', $userId)->where('is_active', true)->first();
+
+        if (!$member) {
+            // Add member to lobby
+            $lobby->addMember($userId, $request->status);
+
+            // Create system message for member join
+            $lobby->addSystemMessage("{$userName} joined the lobby");
+
+            Log::info('Member joined lobby, system message created', [
+                'session_id' => $sessionId,
+                'user_id' => $userId,
+                'user_name' => $userName,
+                'lobby_id' => $lobby->id
+            ]);
+        } else {
+            // Update existing member status
+            $lobby->updateMemberStatus($userId, $request->status);
+        }
 
         // Broadcast status update to lobby
         broadcast(new \App\Events\MemberStatusUpdate(
@@ -550,10 +567,24 @@ class GroupController extends Controller
     {
         $userId = $request->attributes->get('user_id');
 
+        // Find lobby
+        $lobby = \App\Models\WorkoutLobby::where('session_id', $sessionId)->first();
+
+        if (!$lobby) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Lobby not found'
+            ], 404);
+        }
+
+        // Mark lobby as started in database
+        $lobby->markAsStarted();
+
         Log::info('Starting workout for all members', [
             'session_id' => $sessionId,
             'initiator_id' => $userId,
-            'start_time' => time()
+            'start_time' => time(),
+            'lobby_id' => $lobby->id
         ]);
 
         // Broadcast workout start to all members in lobby
@@ -569,6 +600,87 @@ class GroupController extends Controller
                 'start_time' => time()
             ],
             'message' => 'Workout started for all members'
+        ]);
+    }
+
+    /**
+     * Get current lobby state (for when user restores/rejoins)
+     */
+    public function getLobbyState(Request $request, string $sessionId): JsonResponse
+    {
+        // Find lobby
+        $lobby = \App\Models\WorkoutLobby::where('session_id', $sessionId)
+            ->with(['members' => function($query) {
+                $query->where('is_active', true);
+            }])
+            ->first();
+
+        if (!$lobby) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Lobby not found or has been deleted'
+            ], 404);
+        }
+
+        // Get user profiles for all active members
+        $authService = new AuthService();
+        $members = [];
+
+        foreach ($lobby->members as $member) {
+            $userProfile = $authService->getUserProfile($request->bearerToken(), $member->user_id);
+            $userName = $this->getUsernameFromProfile($userProfile, $member->user_id);
+
+            $members[] = [
+                'user_id' => $member->user_id,
+                'username' => $userName,
+                'status' => $member->status,
+                'joined_at' => $member->joined_at->timestamp,
+            ];
+        }
+
+        // Get chat messages
+        $messages = \App\Models\WorkoutLobbyChatMessage::where('lobby_id', $lobby->id)
+            ->orderBy('created_at', 'asc')
+            ->get()
+            ->map(function($msg) use ($authService, $request) {
+                $userName = 'System';
+                if (!$msg->is_system_message && $msg->user_id) {
+                    $userProfile = $authService->getUserProfile($request->bearerToken(), $msg->user_id);
+                    $userName = $this->getUsernameFromProfile($userProfile, $msg->user_id);
+                }
+
+                return [
+                    'message_id' => $msg->message_id,
+                    'user_id' => $msg->user_id,
+                    'username' => $userName,
+                    'message' => $msg->message,
+                    'timestamp' => $msg->created_at->timestamp,
+                    'is_system_message' => $msg->is_system_message,
+                ];
+            });
+
+        Log::info('Fetched lobby state', [
+            'session_id' => $sessionId,
+            'lobby_id' => $lobby->id,
+            'members_count' => count($members),
+            'messages_count' => $messages->count(),
+            'status' => $lobby->status
+        ]);
+
+        return response()->json([
+            'status' => 'success',
+            'data' => [
+                'session_id' => $lobby->session_id,
+                'group_id' => $lobby->group_id,
+                'initiator_id' => $lobby->initiator_id,
+                'workout_data' => $lobby->workout_data,
+                'lobby_status' => $lobby->status,
+                'started_at' => $lobby->started_at?->timestamp,
+                'expires_at' => $lobby->expires_at->timestamp,
+                'members' => $members,
+                'messages' => $messages,
+            ],
+            'message' => 'Lobby state retrieved successfully'
         ]);
     }
 
@@ -766,10 +878,24 @@ class GroupController extends Controller
 
         $userId = $request->attributes->get('user_id');
 
+        // Find lobby
+        $lobby = \App\Models\WorkoutLobby::where('session_id', $sessionId)->first();
+
+        if (!$lobby) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Lobby not found'
+            ], 404);
+        }
+
+        // Update workout data in database
+        $lobby->updateWorkoutData($request->workout_data);
+
         Log::info('Broadcasting generated exercises to lobby', [
             'session_id' => $sessionId,
             'initiator_id' => $userId,
-            'exercises_count' => count($request->workout_data['exercises'] ?? [])
+            'exercises_count' => count($request->workout_data['exercises'] ?? []),
+            'lobby_id' => $lobby->id
         ]);
 
         // Broadcast exercises to all members in the lobby
@@ -804,6 +930,16 @@ class GroupController extends Controller
         $userId = $request->attributes->get('user_id');
         $message = $request->input('message');
 
+        // Find lobby
+        $lobby = \App\Models\WorkoutLobby::where('session_id', $sessionId)->first();
+
+        if (!$lobby) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Lobby not found'
+            ], 404);
+        }
+
         // Get user info
         $authService = new AuthService();
         $userProfile = $authService->getUserProfile($request->bearerToken(), $userId);
@@ -826,12 +962,22 @@ class GroupController extends Controller
         $messageId = Str::uuid()->toString();
         $timestamp = time();
 
+        // Store message in database
+        \App\Models\WorkoutLobbyChatMessage::create([
+            'message_id' => $messageId,
+            'lobby_id' => $lobby->id,
+            'user_id' => $userId,
+            'message' => $message,
+            'is_system_message' => false,
+        ]);
+
         Log::info('Broadcasting lobby chat message', [
             'session_id' => $sessionId,
             'user_id' => $userId,
             'user_name' => $userName,
             'message_id' => $messageId,
-            'message_length' => strlen($message)
+            'message_length' => strlen($message),
+            'lobby_id' => $lobby->id
         ]);
 
         // Broadcast message to all lobby members
@@ -938,6 +1084,16 @@ class GroupController extends Controller
             ], 400);
         }
 
+        // Find lobby
+        $lobby = \App\Models\WorkoutLobby::where('session_id', $sessionId)->first();
+
+        if (!$lobby) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Lobby not found'
+            ], 404);
+        }
+
         // Get kicked user info
         $authService = new AuthService();
         $kickedUserProfile = $authService->getUserProfile($request->bearerToken(), $kickedUserId);
@@ -947,8 +1103,16 @@ class GroupController extends Controller
             'session_id' => $sessionId,
             'initiator_id' => $initiatorId,
             'kicked_user_id' => $kickedUserId,
-            'kicked_user_name' => $kickedUserName
+            'kicked_user_name' => $kickedUserName,
+            'lobby_id' => $lobby->id
         ]);
+
+        // Create system message for member leaving/kicked BEFORE removing
+        // This ensures the message is saved before lobby might be deleted
+        $lobby->addSystemMessage("{$kickedUserName} left the lobby");
+
+        // Remove member from database
+        $lobby->removeMember($kickedUserId);
 
         // Broadcast kick event to all lobby members
         broadcast(new \App\Events\MemberKicked(
@@ -957,6 +1121,9 @@ class GroupController extends Controller
             $kickedUserName
         ));
 
+        // Check if lobby is empty and delete if so
+        $lobby->deleteIfEmpty();
+
         return response()->json([
             'status' => 'success',
             'data' => [
@@ -964,6 +1131,62 @@ class GroupController extends Controller
                 'kicked_user_name' => $kickedUserName
             ],
             'message' => 'User removed from lobby successfully'
+        ]);
+    }
+
+    /**
+     * Leave lobby voluntarily
+     */
+    public function leaveLobby(Request $request, string $sessionId): JsonResponse
+    {
+        $userId = $request->attributes->get('user_id');
+
+        // Find lobby
+        $lobby = \App\Models\WorkoutLobby::where('session_id', $sessionId)->first();
+
+        if (!$lobby) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Lobby not found'
+            ], 404);
+        }
+
+        // Get user info
+        $authService = new AuthService();
+        $userProfile = $authService->getUserProfile($request->bearerToken(), $userId);
+        $userName = $this->getUsernameFromProfile($userProfile, $userId);
+
+        Log::info('User leaving lobby voluntarily', [
+            'session_id' => $sessionId,
+            'user_id' => $userId,
+            'user_name' => $userName,
+            'lobby_id' => $lobby->id
+        ]);
+
+        // Create system message for member leaving BEFORE removing
+        // This ensures the message is saved before lobby might be deleted
+        $lobby->addSystemMessage("{$userName} left the lobby");
+
+        // Remove member from database
+        $lobby->removeMember($userId);
+
+        // Broadcast member left event to all lobby members
+        broadcast(new \App\Events\MemberKicked(
+            $sessionId,
+            $userId,
+            $userName
+        ));
+
+        // Check if lobby is empty and delete if so
+        $lobby->deleteIfEmpty();
+
+        return response()->json([
+            'status' => 'success',
+            'data' => [
+                'user_id' => $userId,
+                'user_name' => $userName
+            ],
+            'message' => 'Left lobby successfully'
         ]);
     }
 

@@ -3,6 +3,7 @@
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
+use Illuminate\Console\Scheduling\Schedule;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
@@ -16,6 +17,10 @@ return Application::configure(basePath: dirname(__DIR__))
         $middleware->alias([
             'auth.api' => \App\Http\Middleware\ValidateApiToken::class,
         ]);
+    })
+    ->withSchedule(function (Schedule $schedule): void {
+        // Cleanup expired lobbies every 5 minutes
+        $schedule->job(\App\Jobs\CleanupExpiredLobbies::class)->everyFiveMinutes();
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         //

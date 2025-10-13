@@ -19,6 +19,7 @@ class LobbyMessageSent implements ShouldBroadcast
     public $message;
     public $timestamp;
     public $messageId;
+    public $isSystemMessage;
 
     /**
      * Create a new event instance.
@@ -29,7 +30,8 @@ class LobbyMessageSent implements ShouldBroadcast
         string $userName,
         string $message,
         int $timestamp,
-        string $messageId
+        string $messageId,
+        bool $isSystemMessage = false
     ) {
         $this->sessionId = $sessionId;
         $this->userId = $userId;
@@ -37,6 +39,7 @@ class LobbyMessageSent implements ShouldBroadcast
         $this->message = $message;
         $this->timestamp = $timestamp;
         $this->messageId = $messageId;
+        $this->isSystemMessage = $isSystemMessage;
     }
 
     /**
@@ -61,6 +64,7 @@ class LobbyMessageSent implements ShouldBroadcast
             'user_name' => $this->userName,
             'message' => $this->message,
             'timestamp' => $this->timestamp,
+            'is_system_message' => $this->isSystemMessage,
         ];
     }
 

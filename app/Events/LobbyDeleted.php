@@ -10,25 +10,18 @@ use Illuminate\Contracts\Broadcasting\ShouldBroadcast;
 use Illuminate\Foundation\Events\Dispatchable;
 use Illuminate\Queue\SerializesModels;
 
-class MemberKicked implements ShouldBroadcast
+class LobbyDeleted implements ShouldBroadcast
 {
     use Dispatchable, InteractsWithSockets, SerializesModels;
 
-    public $sessionId;
-    public $kickedUserId;
-    public $kickedUserName;
+    public string $sessionId;
 
     /**
      * Create a new event instance.
      */
-    public function __construct(
-        string $sessionId,
-        int $kickedUserId,
-        string $kickedUserName
-    ) {
+    public function __construct(string $sessionId)
+    {
         $this->sessionId = $sessionId;
-        $this->kickedUserId = $kickedUserId;
-        $this->kickedUserName = $kickedUserName;
     }
 
     /**
@@ -48,7 +41,7 @@ class MemberKicked implements ShouldBroadcast
      */
     public function broadcastAs(): string
     {
-        return 'MemberKicked';
+        return 'LobbyDeleted';
     }
 
     /**
@@ -57,8 +50,8 @@ class MemberKicked implements ShouldBroadcast
     public function broadcastWith(): array
     {
         return [
-            'kickedUserId' => $this->kickedUserId,
-            'kickedUserName' => $this->kickedUserName,
+            'session_id' => $this->sessionId,
+            'deleted_at' => now()->timestamp,
         ];
     }
 }
