@@ -7,6 +7,17 @@ Broadcast::channel('App.Models.User.{id}', function ($user, $id) {
     return (int) $user->id === (int) $id;
 });
 
+// User notification channel - For real-time notifications
+Broadcast::channel('user.{userId}', function ($user, $userId) {
+    Log::info('Broadcasting auth for user notification channel', [
+        'authenticated_user_id' => $user->id ?? 'null',
+        'requested_user_id' => $userId
+    ]);
+
+    // User can only subscribe to their own notification channel
+    return (int) $user->id === (int) $userId;
+});
+
 // Group private channel - Only group members can subscribe
 Broadcast::channel('group.{groupId}', function ($user, $groupId) {
     Log::info('Broadcasting auth for group channel', [
