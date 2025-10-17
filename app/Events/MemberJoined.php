@@ -10,25 +10,24 @@ use Illuminate\Contracts\Broadcasting\ShouldBroadcast;
 use Illuminate\Foundation\Events\Dispatchable;
 use Illuminate\Queue\SerializesModels;
 
-class MemberKicked implements ShouldBroadcast
+class MemberJoined implements ShouldBroadcast
 {
     use Dispatchable, InteractsWithSockets, SerializesModels;
 
     public string $sessionId;
-    public int $kickedUserId;
-    public int $timestamp;
+    public array $member;
+    public array $lobbyState;
+    public int $version;
 
     /**
      * Create a new event instance.
      */
-    public function __construct(
-        string $sessionId,
-        int $kickedUserId,
-        int $timestamp
-    ) {
+    public function __construct(string $sessionId, array $member, array $lobbyState, int $version)
+    {
         $this->sessionId = $sessionId;
-        $this->kickedUserId = $kickedUserId;
-        $this->timestamp = $timestamp;
+        $this->member = $member;
+        $this->lobbyState = $lobbyState;
+        $this->version = $version;
     }
 
     /**
@@ -36,8 +35,7 @@ class MemberKicked implements ShouldBroadcast
      */
     public function broadcastOn(): Channel
     {
-        // Send to kicked user's personal channel
-        return new PrivateChannel('user.' . $this->kickedUserId);
+        return new PrivateChannel('lobby.' . $this->sessionId);
     }
 
     /**
@@ -45,7 +43,7 @@ class MemberKicked implements ShouldBroadcast
      */
     public function broadcastAs(): string
     {
-        return 'MemberKicked';
+        return 'member.joined';
     }
 
     /**
@@ -54,9 +52,10 @@ class MemberKicked implements ShouldBroadcast
     public function broadcastWith(): array
     {
         return [
-            'session_id' => $this->sessionId,
-            'timestamp' => $this->timestamp,
-            'message' => 'You have been removed from the lobby',
+            'member' => $this->member,
+            'lobby_state' => $this->lobbyState,
+            'version' => $this->version,
+            'timestamp' => time(),
         ];
     }
 }

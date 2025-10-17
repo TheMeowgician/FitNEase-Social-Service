@@ -44,16 +44,30 @@ Broadcast::channel('group.{groupId}', function ($user, $groupId) {
     return $result;
 });
 
-// Workout lobby channel - Anyone with valid session can join
+// Workout lobby channel - Only lobby members can subscribe
 Broadcast::channel('lobby.{sessionId}', function ($user, $sessionId) {
     Log::info('Broadcasting auth for lobby channel', [
         'user_id' => $user->id ?? 'null',
         'session_id' => $sessionId
     ]);
 
-    // Allow any authenticated user to join lobby
-    // In production, you might want to verify they were invited
-    return true;
+    // Check if user is a member of this lobby
+    $lobby = \App\Models\WorkoutLobby::where('session_id', $sessionId)->first();
+
+    if (!$lobby) {
+        Log::warning('Lobby not found for channel auth', ['session_id' => $sessionId]);
+        return false;
+    }
+
+    $isMember = $lobby->hasMember($user->id);
+
+    Log::info('Lobby channel auth result', [
+        'user_id' => $user->id,
+        'session_id' => $sessionId,
+        'is_member' => $isMember
+    ]);
+
+    return $isMember;
 });
 
 // Workout session channel - For real-time workout control (pause/resume)

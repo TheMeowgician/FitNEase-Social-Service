@@ -4,61 +4,66 @@ namespace App\Events;
 
 use Illuminate\Broadcasting\Channel;
 use Illuminate\Broadcasting\InteractsWithSockets;
+use Illuminate\Broadcasting\PresenceChannel;
 use Illuminate\Broadcasting\PrivateChannel;
 use Illuminate\Contracts\Broadcasting\ShouldBroadcast;
 use Illuminate\Foundation\Events\Dispatchable;
 use Illuminate\Queue\SerializesModels;
 
-class LobbyMessageSent implements ShouldBroadcast
+class MemberLeft implements ShouldBroadcast
 {
     use Dispatchable, InteractsWithSockets, SerializesModels;
 
     public string $sessionId;
-    public ?int $userId; // Null for system messages
+    public int $userId;
     public string $userName;
-    public string $message;
-    public int $timestamp;
-    public string $messageId;
-    public bool $isSystemMessage;
+    public array $lobbyState;
+    public int $version;
 
+    /**
+     * Create a new event instance.
+     */
     public function __construct(
         string $sessionId,
-        ?int $userId,
+        int $userId,
         string $userName,
-        string $message,
-        int $timestamp,
-        string $messageId,
-        bool $isSystemMessage = false
+        array $lobbyState,
+        int $version
     ) {
         $this->sessionId = $sessionId;
         $this->userId = $userId;
         $this->userName = $userName;
-        $this->message = $message;
-        $this->timestamp = $timestamp;
-        $this->messageId = $messageId;
-        $this->isSystemMessage = $isSystemMessage;
+        $this->lobbyState = $lobbyState;
+        $this->version = $version;
     }
 
+    /**
+     * Get the channels the event should broadcast on.
+     */
     public function broadcastOn(): Channel
     {
         return new PrivateChannel('lobby.' . $this->sessionId);
     }
 
+    /**
+     * The event's broadcast name.
+     */
     public function broadcastAs(): string
     {
-        return 'LobbyMessageSent';
+        return 'member.left';
     }
 
+    /**
+     * Get the data to broadcast.
+     */
     public function broadcastWith(): array
     {
         return [
-            'session_id' => $this->sessionId,
             'user_id' => $this->userId,
             'user_name' => $this->userName,
-            'message' => $this->message,
-            'timestamp' => $this->timestamp,
-            'message_id' => $this->messageId,
-            'is_system_message' => $this->isSystemMessage,
+            'lobby_state' => $this->lobbyState,
+            'version' => $this->version,
+            'timestamp' => time(),
         ];
     }
 }

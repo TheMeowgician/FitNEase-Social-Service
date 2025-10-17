@@ -9,22 +9,17 @@ use Illuminate\Contracts\Broadcasting\ShouldBroadcast;
 use Illuminate\Foundation\Events\Dispatchable;
 use Illuminate\Queue\SerializesModels;
 
-class LobbyDeleted implements ShouldBroadcast
+class LobbyStateChanged implements ShouldBroadcast
 {
     use Dispatchable, InteractsWithSockets, SerializesModels;
 
     public string $sessionId;
-    public string $reason;
-    public int $timestamp;
+    public array $lobbyState;
 
-    public function __construct(
-        string $sessionId,
-        string $reason,
-        int $timestamp
-    ) {
+    public function __construct(string $sessionId, array $lobbyState)
+    {
         $this->sessionId = $sessionId;
-        $this->reason = $reason;
-        $this->timestamp = $timestamp;
+        $this->lobbyState = $lobbyState;
     }
 
     public function broadcastOn(): Channel
@@ -34,15 +29,14 @@ class LobbyDeleted implements ShouldBroadcast
 
     public function broadcastAs(): string
     {
-        return 'LobbyDeleted';
+        return 'LobbyStateChanged';
     }
 
     public function broadcastWith(): array
     {
         return [
             'session_id' => $this->sessionId,
-            'reason' => $this->reason,
-            'timestamp' => $this->timestamp,
+            'lobby_state' => $this->lobbyState,
         ];
     }
 }

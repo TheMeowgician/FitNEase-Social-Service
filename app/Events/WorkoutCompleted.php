@@ -4,31 +4,27 @@ namespace App\Events;
 
 use Illuminate\Broadcasting\Channel;
 use Illuminate\Broadcasting\InteractsWithSockets;
-use Illuminate\Broadcasting\PresenceChannel;
 use Illuminate\Broadcasting\PrivateChannel;
 use Illuminate\Contracts\Broadcasting\ShouldBroadcast;
 use Illuminate\Foundation\Events\Dispatchable;
 use Illuminate\Queue\SerializesModels;
 
-class MemberKicked implements ShouldBroadcast
+class WorkoutCompleted implements ShouldBroadcast
 {
     use Dispatchable, InteractsWithSockets, SerializesModels;
 
-    public string $sessionId;
-    public int $kickedUserId;
-    public int $timestamp;
+    public $sessionId;
+    public $initiatorId;
+    public $initiatorName;
 
     /**
      * Create a new event instance.
      */
-    public function __construct(
-        string $sessionId,
-        int $kickedUserId,
-        int $timestamp
-    ) {
+    public function __construct($sessionId, $initiatorId, $initiatorName)
+    {
         $this->sessionId = $sessionId;
-        $this->kickedUserId = $kickedUserId;
-        $this->timestamp = $timestamp;
+        $this->initiatorId = $initiatorId;
+        $this->initiatorName = $initiatorName;
     }
 
     /**
@@ -36,8 +32,7 @@ class MemberKicked implements ShouldBroadcast
      */
     public function broadcastOn(): Channel
     {
-        // Send to kicked user's personal channel
-        return new PrivateChannel('user.' . $this->kickedUserId);
+        return new PrivateChannel('session.' . $this->sessionId);
     }
 
     /**
@@ -45,7 +40,7 @@ class MemberKicked implements ShouldBroadcast
      */
     public function broadcastAs(): string
     {
-        return 'MemberKicked';
+        return 'WorkoutCompleted';
     }
 
     /**
@@ -54,9 +49,9 @@ class MemberKicked implements ShouldBroadcast
     public function broadcastWith(): array
     {
         return [
-            'session_id' => $this->sessionId,
-            'timestamp' => $this->timestamp,
-            'message' => 'You have been removed from the lobby',
+            'initiatorId' => $this->initiatorId,
+            'initiatorName' => $this->initiatorName,
+            'timestamp' => now()->timestamp,
         ];
     }
 }

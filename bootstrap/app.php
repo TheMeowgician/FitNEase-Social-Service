@@ -6,6 +6,9 @@ use Illuminate\Foundation\Configuration\Middleware;
 use Illuminate\Console\Scheduling\Schedule;
 
 return Application::configure(basePath: dirname(__DIR__))
+    ->withProviders([
+        \App\Providers\RateLimitServiceProvider::class,
+    ])
     ->withRouting(
         web: __DIR__.'/../routes/web.php',
         api: __DIR__.'/../routes/api.php',
@@ -16,6 +19,15 @@ return Application::configure(basePath: dirname(__DIR__))
     ->withMiddleware(function (Middleware $middleware): void {
         $middleware->alias([
             'auth.api' => \App\Http\Middleware\ValidateApiToken::class,
+        ]);
+
+        // Configure API rate limiting
+        $middleware->throttleApi();
+
+        // Custom rate limiters
+        $middleware->alias([
+            'throttle.lobby' => \Illuminate\Routing\Middleware\ThrottleRequests::class.':lobby_creation',
+            'throttle.invitations' => \Illuminate\Routing\Middleware\ThrottleRequests::class.':invitations',
         ]);
     })
     ->withSchedule(function (Schedule $schedule): void {

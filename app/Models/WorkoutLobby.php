@@ -3,10 +3,9 @@
 namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
-use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
-use Illuminate\Support\Facades\Log;
-use App\Events\LobbyDeleted;
+use Illuminate\Database\Eloquent\Builder;
+use Carbon\Carbon;
 
 class WorkoutLobby extends Model
 {
@@ -17,164 +16,248 @@ class WorkoutLobby extends Model
         'workout_data',
         'status',
         'started_at',
+        'completed_at',
         'expires_at',
     ];
 
     protected $casts = [
         'workout_data' => 'array',
         'started_at' => 'datetime',
+        'completed_at' => 'datetime',
         'expires_at' => 'datetime',
     ];
 
-    /**
-     * Relationships
-     */
-    public function group(): BelongsTo
-    {
-        return $this->belongsTo(Group::class, 'group_id', 'group_id');
-    }
+    // ==================== RELATIONSHIPS ====================
 
+    /**
+     * Lobby has many members
+     */
     public function members(): HasMany
     {
         return $this->hasMany(WorkoutLobbyMember::class, 'lobby_id');
     }
 
+    /**
+     * Get only active members (not left or kicked)
+     */
+    public function activeMembers(): HasMany
+    {
+        return $this->members()->whereIn('status', ['waiting', 'ready']);
+    }
+
+    /**
+     * Lobby has many chat messages
+     */
     public function chatMessages(): HasMany
     {
         return $this->hasMany(WorkoutLobbyChatMessage::class, 'lobby_id');
     }
 
     /**
-     * Scopes
+     * Lobby has many invitations (via session_id)
      */
-    public function scopeActive($query)
+    public function invitations(): HasMany
+    {
+        return $this->hasMany(WorkoutInvitation::class, 'session_id', 'session_id');
+    }
+
+    // ==================== SCOPES ====================
+
+    /**
+     * Scope: Only active lobbies (not completed or cancelled)
+     */
+    public function scopeActive(Builder $query): Builder
     {
         return $query->whereNotIn('status', ['completed', 'cancelled']);
     }
 
-    public function scopeExpired($query)
+    /**
+     * Scope: Only waiting lobbies
+     */
+    public function scopeWaiting(Builder $query): Builder
+    {
+        return $query->where('status', 'waiting');
+    }
+
+    /**
+     * Scope: Expired lobbies
+     */
+    public function scopeExpired(Builder $query): Builder
     {
         return $query->where('expires_at', '<', now());
     }
 
     /**
-     * Methods
+     * Scope: By group
+     */
+    public function scopeForGroup(Builder $query, int $groupId): Builder
+    {
+        return $query->where('group_id', $groupId);
+    }
+
+    // ==================== ACCESSORS ====================
+
+    /**
+     * Check if lobby is expired
+     */
+    public function getIsExpiredAttribute(): bool
+    {
+        return $this->expires_at->isPast();
+    }
+
+    /**
+     * Check if lobby is active (can join)
+     */
+    public function getIsActiveAttribute(): bool
+    {
+        return $this->status === 'waiting' && !$this->is_expired;
+    }
+
+    /**
+     * Get active member count
+     */
+    public function getActiveMemberCountAttribute(): int
+    {
+        return $this->activeMembers()->count();
+    }
+
+    /**
+     * Check if all members are ready
+     */
+    public function getAreAllMembersReadyAttribute(): bool
+    {
+        $members = $this->activeMembers;
+        return $members->count() > 0 && $members->where('status', 'ready')->count() === $members->count();
+    }
+
+    // ==================== BUSINESS LOGIC METHODS ====================
+
+    /**
+     * Check if user is a member of this lobby
+     */
+    public function hasMember(int $userId): bool
+    {
+        return $this->activeMembers()->where('user_id', $userId)->exists();
+    }
+
+    /**
+     * Check if user is the initiator
+     */
+    public function isInitiator(int $userId): bool
+    {
+        return $this->initiator_id === $userId;
+    }
+
+    /**
+     * Add a member to the lobby
      */
     public function addMember(int $userId, string $status = 'waiting'): WorkoutLobbyMember
     {
         return $this->members()->create([
             'user_id' => $userId,
             'status' => $status,
-            'is_active' => true,
+            'joined_at' => now(),
         ]);
     }
 
-    public function removeMember(int $userId): bool
+    /**
+     * Remove a member from the lobby
+     */
+    public function removeMember(int $userId, string $reason = 'user_left'): bool
     {
-        $member = $this->members()
+        return $this->members()
             ->where('user_id', $userId)
-            ->where('is_active', true)
-            ->first();
-
-        if ($member) {
-            $member->update([
-                'is_active' => false,
+            ->whereIn('status', ['waiting', 'ready'])
+            ->update([
+                'status' => $reason === 'kicked' ? 'kicked' : 'left',
                 'left_at' => now(),
-            ]);
-            return true;
-        }
-
-        return false;
+                'left_reason' => $reason,
+            ]) > 0;
     }
 
+    /**
+     * Update member status (waiting/ready)
+     */
     public function updateMemberStatus(int $userId, string $status): bool
     {
-        $member = $this->members()
+        return $this->members()
             ->where('user_id', $userId)
-            ->where('is_active', true)
-            ->first();
+            ->update(['status' => $status]) > 0;
+    }
 
-        if ($member) {
-            $member->update(['status' => $status]);
-            return true;
+    /**
+     * Transfer initiator role to another member
+     */
+    public function transferInitiator(int $newInitiatorId): bool
+    {
+        // Verify new initiator is a member
+        if (!$this->hasMember($newInitiatorId)) {
+            return false;
         }
 
-        return false;
+        $this->update(['initiator_id' => $newInitiatorId]);
+        return true;
     }
 
-    public function getActiveMembers()
-    {
-        return $this->members()->active()->get();
-    }
-
-    public function updateWorkoutData(array $workoutData): bool
-    {
-        return $this->update(['workout_data' => $workoutData]);
-    }
-
+    /**
+     * Mark lobby as started
+     */
     public function markAsStarted(): bool
     {
         return $this->update([
-            'status' => 'started',
+            'status' => 'in_progress',
             'started_at' => now(),
         ]);
     }
 
+    /**
+     * Mark lobby as completed
+     */
     public function markAsCompleted(): bool
     {
-        return $this->update(['status' => 'completed']);
+        return $this->update([
+            'status' => 'completed',
+            'completed_at' => now(),
+        ]);
     }
 
+    /**
+     * Mark lobby as cancelled
+     */
     public function markAsCancelled(): bool
     {
         return $this->update(['status' => 'cancelled']);
     }
 
-    public function deleteIfEmpty(): bool
+    /**
+     * Check if lobby should auto-complete (no members left)
+     */
+    public function shouldAutoComplete(): bool
     {
-        $activeMembersCount = $this->members()->active()->count();
+        return $this->active_member_count === 0 && $this->status === 'waiting';
+    }
 
-        if ($activeMembersCount === 0) {
-            Log::info('Lobby is empty, deleting', [
-                'session_id' => $this->session_id,
-                'lobby_id' => $this->id
-            ]);
-
-            // Broadcast LobbyDeleted event before deleting
-            broadcast(new LobbyDeleted($this->session_id));
-
-            // Delete lobby (cascade will delete members and messages)
-            $this->delete();
-
-            return true;
+    /**
+     * Auto-complete lobby if empty
+     */
+    public function autoCompleteIfEmpty(): bool
+    {
+        if ($this->shouldAutoComplete()) {
+            return $this->markAsCompleted();
         }
-
         return false;
     }
 
+    /**
+     * Add system chat message
+     */
     public function addSystemMessage(string $message): WorkoutLobbyChatMessage
     {
-        $messageId = \Illuminate\Support\Str::uuid()->toString();
-        $timestamp = time();
-
-        $chatMessage = $this->chatMessages()->create([
-            'message_id' => $messageId,
-            'user_id' => 0, // System user
+        return $this->chatMessages()->create([
+            'message_id' => \Illuminate\Support\Str::uuid(),
+            'user_id' => null,
             'message' => $message,
             'is_system_message' => true,
         ]);
-
-        // Broadcast system message to all lobby members
-        broadcast(new \App\Events\LobbyMessageSent(
-            $this->session_id,
-            0, // System user ID
-            'System',
-            $message,
-            $timestamp,
-            $messageId,
-            true // is_system_message
-        ));
-
-        return $chatMessage;
     }
 }
