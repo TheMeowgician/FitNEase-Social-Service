@@ -25,6 +25,11 @@ Route::get('/health', function () {
     return response()->json(['status' => 'OK', 'service' => 'fitnease-social']);
 });
 
+// Service-to-service endpoints (no auth required)
+Route::prefix('social')->group(function () {
+    // Called by tracking service after workout completion to broadcast updated stats
+    Route::post('/groups/{groupId}/broadcast-stats', [GroupController::class, 'broadcastGroupStats']);
+});
 
 Route::prefix('social')->middleware([ValidateApiToken::class, 'throttle:api'])->group(function () {
 

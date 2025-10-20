@@ -84,6 +84,7 @@ class ValidateApiToken
                     Log::info('Setting Auth user for broadcasting route', [
                         'user_id' => $userData['user_id'] ?? null,
                         'email' => $userData['email'] ?? null,
+                        'username' => $userData['username'] ?? null,
                         'token_prefix' => substr($token, 0, 20) . '...'
                     ]);
                     // Create a User instance for Laravel's broadcasting
@@ -91,6 +92,8 @@ class ValidateApiToken
                     $user->id = $userData['user_id'] ?? null;
                     $user->email = $userData['email'] ?? null;
                     $user->name = $userData['name'] ?? $userData['email'] ?? 'User';
+                    // IMPORTANT: Include username for presence channels
+                    $user->username = $userData['username'] ?? 'User';
                     $user->exists = true; // Mark as existing user
                     Auth::setUser($user);
                 }

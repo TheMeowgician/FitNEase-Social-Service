@@ -15,8 +15,10 @@ use Illuminate\Support\Facades\Validator;
 use App\Services\AuthService;
 use App\Services\CommunicationsService;
 use App\Events\GroupWorkoutInvitation;
+use App\Events\GroupStatsUpdated;
 use Carbon\Carbon;
 use Illuminate\Support\Str;
+use GuzzleHttp\Client;
 
 class GroupController extends Controller
 {
@@ -783,6 +785,89 @@ class GroupController extends Controller
             return trim(($userProfile['first_name'] ?? '') . ' ' . ($userProfile['last_name'] ?? ''));
         } else {
             return $userId ? 'User ' . $userId : 'Unknown User';
+        }
+    }
+
+    /**
+     * Calculate and broadcast real-time group stats update via WebSocket
+     * Should be called after a group workout is completed
+     */
+    public function broadcastGroupStats(int $groupId): JsonResponse
+    {
+        try {
+            // Fetch group workout stats from tracking service
+            $client = new Client();
+
+            try {
+                $response = $client->get(env('TRACKING_SERVICE_URL') . '/tracking/group-workouts/' . $groupId, [
+                    'headers' => [
+                        'Accept' => 'application/json'
+                    ],
+                    'timeout' => 5
+                ]);
+
+                $workoutSessions = json_decode($response->getBody(), true);
+                $sessions = $workoutSessions['data'] ?? [];
+
+                // Calculate stats from workout sessions
+                $totalWorkouts = count($sessions);
+                $totalMinutes = array_reduce($sessions, function($carry, $session) {
+                    return $carry + ($session['duration_minutes'] ?? 0);
+                }, 0);
+
+                // Calculate weekly average (last 7 days)
+                $weekAgo = Carbon::now()->subDays(7);
+                $weeklyWorkouts = array_filter($sessions, function($session) use ($weekAgo) {
+                    $createdAt = isset($session['created_at']) ? Carbon::parse($session['created_at']) : null;
+                    return $createdAt && $createdAt->isAfter($weekAgo);
+                });
+                $averageWeeklyActivity = count($weeklyWorkouts);
+
+                $stats = [
+                    'totalWorkouts' => $totalWorkouts,
+                    'totalMinutes' => $totalMinutes,
+                    'averageWeeklyActivity' => $averageWeeklyActivity,
+                ];
+
+            } catch (\Exception $e) {
+                // If tracking service is unavailable, use default stats
+                Log::warning('Failed to fetch workout stats from tracking service', [
+                    'group_id' => $groupId,
+                    'error' => $e->getMessage()
+                ]);
+
+                $stats = [
+                    'totalWorkouts' => 0,
+                    'totalMinutes' => 0,
+                    'averageWeeklyActivity' => 0,
+                ];
+            }
+
+            // Broadcast to group's private channel
+            broadcast(new GroupStatsUpdated($groupId, $stats));
+
+            Log::info('Group stats broadcasted', [
+                'group_id' => $groupId,
+                'stats' => $stats
+            ]);
+
+            return response()->json([
+                'status' => 'success',
+                'message' => 'Group stats broadcasted successfully',
+                'data' => $stats
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('Failed to broadcast group stats', [
+                'group_id' => $groupId,
+                'error' => $e->getMessage()
+            ]);
+
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Failed to broadcast group stats',
+                'error' => $e->getMessage()
+            ], 500);
         }
     }
 }

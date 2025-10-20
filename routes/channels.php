@@ -80,3 +80,22 @@ Broadcast::channel('session.{sessionId}', function ($user, $sessionId) {
     // Allow any authenticated user to join session
     return true;
 });
+
+// GLOBAL online users presence channel - All logged-in users join this channel
+Broadcast::channel('online-users', function ($user) {
+    // The $user object already has username populated by ValidateApiToken middleware
+    $username = $user->username ?? 'User';
+
+    Log::info('Broadcasting auth for GLOBAL online-users presence channel', [
+        'user_id' => $user->id ?? 'null',
+        'username' => $username,
+        'email' => $user->email ?? 'null'
+    ]);
+
+    // Return user info for presence channel
+    // The 'id' will be used as the presence member identifier
+    return [
+        'id' => $user->id,
+        'username' => $username,
+    ];
+});

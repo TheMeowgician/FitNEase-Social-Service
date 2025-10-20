@@ -5,6 +5,7 @@ namespace App\Http\Controllers;
 use App\Models\Group;
 use App\Models\GroupMember;
 use App\Services\AuthService;
+use App\Events\GroupMemberUpdated;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\DB;
@@ -58,6 +59,9 @@ class GroupMemberController extends Controller
             } else {
                 $existingMembership->update(['is_active' => true, 'joined_at' => now()]);
 
+                // Broadcast real-time member update when user rejoins
+                $this->broadcastGroupMemberUpdate($group->group_id);
+
                 return response()->json([
                     'status' => 'success',
                     'data' => $existingMembership->load(['group']),
@@ -73,6 +77,9 @@ class GroupMemberController extends Controller
         ]);
 
         $this->notifyGroupJoin($group, $request->attributes->get('user_id'));
+
+        // Broadcast real-time member update to all group members
+        $this->broadcastGroupMemberUpdate($group->group_id);
 
         return response()->json([
             'status' => 'success',
@@ -115,6 +122,9 @@ class GroupMemberController extends Controller
             } else {
                 $existingMembership->update(['is_active' => true, 'joined_at' => now()]);
 
+                // Broadcast real-time member update when user rejoins
+                $this->broadcastGroupMemberUpdate((int)$groupId);
+
                 return response()->json([
                     'status' => 'success',
                     'data' => $existingMembership->load(['group']),
@@ -130,6 +140,9 @@ class GroupMemberController extends Controller
         ]);
 
         $this->notifyGroupJoin($group, $request->attributes->get('user_id'));
+
+        // Broadcast real-time member update to all group members
+        $this->broadcastGroupMemberUpdate((int)$groupId);
 
         return response()->json([
             'status' => 'success',
@@ -398,6 +411,9 @@ class GroupMemberController extends Controller
             $this->notifyUserKicked($group, (int)$userId, (int)$request->attributes->get('user_id'));
         }
 
+        // Broadcast real-time member update to all group members
+        $this->broadcastGroupMemberUpdate((int)$groupId);
+
         return response()->json([
             'status' => 'success',
             'message' => 'Member removed successfully'
@@ -538,5 +554,107 @@ class GroupMemberController extends Controller
                 'error' => $e->getMessage()
             ]);
         }
+    }
+
+    /**
+     * Broadcast real-time group member list update via WebSocket
+     */
+    private function broadcastGroupMemberUpdate(int $groupId): void
+    {
+        try {
+            // Fetch updated member count
+            $memberCount = GroupMember::where('group_id', $groupId)
+                ->where('is_active', true)
+                ->count();
+
+            // Fetch updated members list
+            $groupMembers = GroupMember::where('group_id', $groupId)
+                ->where('is_active', true)
+                ->orderBy('joined_at', 'desc')
+                ->get();
+
+            // Batch fetch ALL usernames from auth service at once (more efficient)
+            $userIds = $groupMembers->pluck('user_id')->toArray();
+            $usernamesMap = $this->batchFetchUsernames($userIds);
+
+            // Map members with fetched usernames
+            $members = $groupMembers->map(function($member) use ($usernamesMap) {
+                return [
+                    'id' => $member->group_member_id, // Use correct primary key
+                    'userId' => (string)$member->user_id,
+                    'username' => $usernamesMap[$member->user_id] ?? 'User ' . $member->user_id,
+                    'role' => $member->member_role,
+                    'joinedAt' => $member->joined_at ? $member->joined_at->toISOString() : null,
+                ];
+            })->toArray();
+
+            // Broadcast to group's private channel
+            broadcast(new GroupMemberUpdated($groupId, $memberCount, $members));
+
+            \Log::info('Group member update broadcasted', [
+                'group_id' => $groupId,
+                'member_count' => $memberCount,
+                'members_broadcasted' => count($members),
+                'usernames_fetched' => count($usernamesMap)
+            ]);
+        } catch (\Exception $e) {
+            \Log::error('Failed to broadcast group member update', [
+                'group_id' => $groupId,
+                'error' => $e->getMessage()
+            ]);
+        }
+    }
+
+    /**
+     * Batch fetch usernames for multiple users (MUCH more efficient than one-by-one)
+     * Returns array mapping user_id => username
+     */
+    private function batchFetchUsernames(array $userIds): array
+    {
+        if (empty($userIds)) {
+            return [];
+        }
+
+        try {
+            $client = new Client();
+
+            // Call batch endpoint - Note: route is /api/batch-user-profiles (no /auth/)
+            $response = $client->post(env('AUTH_SERVICE_URL') . '/api/batch-user-profiles', [
+                'json' => ['user_ids' => $userIds],
+                'timeout' => 5,
+                'headers' => ['Accept' => 'application/json']
+            ]);
+
+            if ($response->getStatusCode() === 200) {
+                $data = json_decode($response->getBody(), true);
+                $profiles = $data['data'] ?? [];
+
+                // Create map of user_id => username
+                $usernamesMap = [];
+                foreach ($profiles as $profile) {
+                    $userId = $profile['id'] ?? $profile['user_id'] ?? null;
+                    $username = $profile['username'] ?? null;
+                    if ($userId && $username) {
+                        $usernamesMap[$userId] = $username;
+                    }
+                }
+
+                \Log::info('Batch fetched usernames', [
+                    'requested' => count($userIds),
+                    'fetched' => count($usernamesMap)
+                ]);
+
+                return $usernamesMap;
+            }
+        } catch (\Exception $e) {
+            \Log::error('Failed to batch fetch usernames', [
+                'user_ids' => $userIds,
+                'error' => $e->getMessage()
+            ]);
+        }
+
+        // Fallback: If batch fetch fails, return empty array
+        // Members will show as "User {id}"
+        return [];
     }
 }
