@@ -390,6 +390,14 @@ class GroupMemberController extends Controller
 
         $targetMembership->update(['is_active' => false]);
 
+        // Get group for notification
+        $group = Group::where('group_id', $groupId)->first();
+
+        // Send notification to the kicked user
+        if ($group) {
+            $this->notifyUserKicked($group, (int)$userId, (int)$request->attributes->get('user_id'));
+        }
+
         return response()->json([
             'status' => 'success',
             'message' => 'Member removed successfully'
@@ -500,6 +508,33 @@ class GroupMemberController extends Controller
             \Log::warning('Failed to notify user invitation: ' . $e->getMessage(), [
                 'group_id' => $group->group_id,
                 'invited_user_id' => $invitedUserId,
+                'error' => $e->getMessage()
+            ]);
+        }
+    }
+
+    private function notifyUserKicked(Group $group, int $kickedUserId, int $kickedByUserId): void
+    {
+        try {
+            $client = new Client();
+            $response = $client->post(env('COMMS_SERVICE_URL') . '/api/comms/group-member-kicked', [
+                'json' => [
+                    'kicked_user_id' => $kickedUserId,
+                    'group_name' => $group->group_name,
+                    'group_id' => $group->group_id,
+                    'kicked_by_user_id' => $kickedByUserId,
+                ]
+            ]);
+
+            \Log::info('Group member kicked notification sent successfully', [
+                'group_id' => $group->group_id,
+                'kicked_user_id' => $kickedUserId,
+                'kicked_by_user_id' => $kickedByUserId
+            ]);
+        } catch (\Exception $e) {
+            \Log::warning('Failed to notify user kicked: ' . $e->getMessage(), [
+                'group_id' => $group->group_id,
+                'kicked_user_id' => $kickedUserId,
                 'error' => $e->getMessage()
             ]);
         }

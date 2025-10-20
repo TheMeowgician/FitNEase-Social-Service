@@ -64,11 +64,12 @@ class WorkoutLobby extends Model
     // ==================== SCOPES ====================
 
     /**
-     * Scope: Only active lobbies (not completed or cancelled)
+     * Scope: Only active lobbies (not completed, cancelled, or expired)
      */
     public function scopeActive(Builder $query): Builder
     {
-        return $query->whereNotIn('status', ['completed', 'cancelled']);
+        return $query->whereNotIn('status', ['completed', 'cancelled'])
+                    ->where('expires_at', '>', now());
     }
 
     /**
@@ -150,11 +151,39 @@ class WorkoutLobby extends Model
 
     /**
      * Add a member to the lobby
+     * If member already exists (even if they left), rejoin them instead of creating duplicate
+     *
+     * @param int $userId User ID to add
+     * @param string $status Initial status (waiting/ready)
+     * @param string|null $userName Username to cache (for instant pause/resume broadcasts)
      */
-    public function addMember(int $userId, string $status = 'waiting'): WorkoutLobbyMember
+    public function addMember(int $userId, string $status = 'waiting', ?string $userName = null): WorkoutLobbyMember
     {
+        // Check if member already exists (including left/kicked members)
+        $existingMember = $this->members()->where('user_id', $userId)->first();
+
+        if ($existingMember) {
+            // Rejoin: update existing record
+            $updateData = [
+                'status' => $status,
+                'joined_at' => now(),
+                'left_at' => null,
+                'left_reason' => null,
+            ];
+
+            // Update username if provided (allows updating stale usernames)
+            if ($userName !== null) {
+                $updateData['user_name'] = $userName;
+            }
+
+            $existingMember->update($updateData);
+            return $existingMember->fresh();
+        }
+
+        // New member: create new record
         return $this->members()->create([
             'user_id' => $userId,
+            'user_name' => $userName, // Cache username for instant pause/resume broadcasts
             'status' => $status,
             'joined_at' => now(),
         ]);

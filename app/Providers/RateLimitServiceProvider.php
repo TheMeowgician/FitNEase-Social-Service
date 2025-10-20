@@ -27,14 +27,14 @@ class RateLimitServiceProvider extends ServiceProvider
             return Limit::perMinute(60)->by($request->attributes->get('user_id') ?? $request->ip());
         });
 
-        // Lobby creation rate limit: 5 lobbies per hour per user
+        // Lobby creation rate limit: 100 lobbies per hour per user (increased for development)
         RateLimiter::for('lobby_creation', function (Request $request) {
             $userId = $request->attributes->get('user_id') ?? $request->ip();
-            return Limit::perHour(5)->by("lobby_creation:{$userId}")
+            return Limit::perHour(100)->by("lobby_creation:{$userId}")
                 ->response(function (Request $request, array $headers) {
                     return response()->json([
                         'status' => 'error',
-                        'message' => 'Too many lobby creations. You can create a maximum of 5 lobbies per hour.',
+                        'message' => 'Too many lobby creations. You can create a maximum of 100 lobbies per hour.',
                         'retry_after' => $headers['Retry-After'] ?? 3600,
                     ], 429);
                 });

@@ -18,16 +18,24 @@ class WorkoutResumed implements ShouldBroadcast
     public $resumedBy;
     public $resumedByName;
     public $resumedAt;
+    public $sessionState;
 
     /**
      * Create a new event instance.
+     *
+     * @param string $sessionId Session ID
+     * @param int $resumedBy User ID who resumed
+     * @param string $resumedByName Username who resumed
+     * @param int $resumedAt Unix timestamp
+     * @param array $sessionState Exact workout state for synchronization
      */
-    public function __construct(string $sessionId, int $resumedBy, string $resumedByName, int $resumedAt)
+    public function __construct(string $sessionId, int $resumedBy, string $resumedByName, int $resumedAt, array $sessionState = [])
     {
         $this->sessionId = $sessionId;
         $this->resumedBy = $resumedBy;
         $this->resumedByName = $resumedByName;
         $this->resumedAt = $resumedAt;
+        $this->sessionState = $sessionState;
     }
 
     /**
@@ -59,6 +67,7 @@ class WorkoutResumed implements ShouldBroadcast
             'resumed_by' => $this->resumedBy,
             'resumed_by_name' => $this->resumedByName,
             'resumed_at' => $this->resumedAt,
+            'session_state' => $this->sessionState,
         ];
     }
 }

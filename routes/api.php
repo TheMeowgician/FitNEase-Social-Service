@@ -136,8 +136,76 @@ Route::prefix('social')->middleware([ValidateApiToken::class, 'throttle:api'])->
 // ============================================================================
 Route::prefix('social/v2')->middleware([ValidateApiToken::class, 'throttle:api'])->group(function () {
 
-    // Get pending invitations (V2)
+    // ============================================================================
+    // LOBBY MANAGEMENT (V2)
+    // ============================================================================
+
+    // Create lobby - Rate limited to prevent spam
+    Route::post('lobby/create', [LobbyController::class, 'createLobby'])
+        ->middleware('throttle:lobby_creation');
+
+    // Join lobby - No extra rate limit (users accept invitations)
+    Route::post('lobby/{sessionId}/join', [LobbyController::class, 'joinLobby']);
+
+    // Leave lobby - No rate limit (users should be able to leave freely)
+    Route::post('lobby/{sessionId}/leave', [LobbyController::class, 'leaveLobby']);
+
+    // Force leave ALL active lobbies (for cleanup) - No rate limit
+    Route::post('lobby/force-leave-all', [LobbyController::class, 'forceLeaveAllLobbies']);
+
+    // Get lobby state - Standard API rate limit
+    Route::get('lobby/{sessionId}', [LobbyController::class, 'getLobbyState']);
+
+    // ============================================================================
+    // MEMBER STATUS & CONTROL (V2)
+    // ============================================================================
+
+    // Update member status (waiting/ready) - Rate limited to prevent spam
+    Route::post('lobby/{sessionId}/status', [LobbyController::class, 'updateStatus'])
+        ->middleware('throttle:status_updates');
+
+    // Update workout data (exercises) - Rate limited to prevent spam
+    Route::post('lobby/{sessionId}/workout-data', [LobbyController::class, 'updateWorkoutData'])
+        ->middleware('throttle:status_updates');
+
+    // Start workout - Only initiator, no extra rate limit
+    Route::post('lobby/{sessionId}/start', [LobbyController::class, 'startWorkout']);
+
+    // ============================================================================
+    // CHAT MESSAGES (V2)
+    // ============================================================================
+
+    // Send chat message - Rate limited to prevent spam
+    Route::post('lobby/{sessionId}/message', [LobbyController::class, 'sendMessage'])
+        ->middleware('throttle:chat_messages');
+
+    // Get chat messages (paginated) - Standard API rate limit
+    Route::get('lobby/{sessionId}/messages', [LobbyController::class, 'getChatMessages']);
+
+    // ============================================================================
+    // INVITATIONS (V2)
+    // ============================================================================
+
+    // Send invitation - Rate limited to prevent spam
+    Route::post('lobby/{sessionId}/invite', [LobbyController::class, 'inviteMember'])
+        ->middleware('throttle:invitations');
+
+    // Accept invitation - No extra rate limit
+    Route::post('invitations/{invitationId}/accept', [LobbyController::class, 'acceptInvitation']);
+
+    // Decline invitation - No extra rate limit
+    Route::post('invitations/{invitationId}/decline', [LobbyController::class, 'declineInvitation']);
+
+    // Get pending invitations - Standard API rate limit
     Route::get('invitations/pending', [LobbyController::class, 'getPendingInvitations']);
+
+    // ============================================================================
+    // MODERATION (V2)
+    // ============================================================================
+
+    // Kick member - Only initiator, moderate rate limit to prevent abuse
+    Route::post('lobby/{sessionId}/kick', [LobbyController::class, 'kickMember'])
+        ->middleware('throttle:moderation_actions');
 
 });
 

@@ -11,6 +11,7 @@ class WorkoutLobbyMember extends Model
     protected $fillable = [
         'lobby_id',
         'user_id',
+        'user_name',
         'status',
         'joined_at',
         'left_at',

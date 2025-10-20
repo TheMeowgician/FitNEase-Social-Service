@@ -5,6 +5,8 @@ namespace App\Http\Controllers;
 use App\Models\Group;
 use App\Models\GroupMember;
 use App\Models\GroupWorkoutEvaluation;
+use App\Models\WorkoutLobby;
+use App\Models\WorkoutSession;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\DB;
@@ -457,8 +459,13 @@ class GroupController extends Controller
                 'expires_at' => now()->addMinutes(config('lobby.expiry_minutes', 30)),
             ]);
 
-            // Add initiator as first member
-            $lobby->addMember($userId, 'waiting');
+            // Get user info
+            $authService = new AuthService();
+            $userProfile = $authService->getUserProfile($request->bearerToken(), $userId);
+            $userName = $this->getUsernameFromProfile($userProfile, $userId);
+
+            // Add initiator as first member (cache username for instant pause/resume)
+            $lobby->addMember($userId, 'waiting', $userName);
 
             DB::commit();
 
@@ -541,31 +548,55 @@ class GroupController extends Controller
     {
         $userId = $request->attributes->get('user_id');
 
-        // Get user info
-        $authService = new AuthService();
-        $userProfile = $authService->getUserProfile($request->bearerToken(), $userId);
-        $userName = $this->getUsernameFromProfile($userProfile, $userId);
+        // SERVER-AUTHORITATIVE: Pause the server session (instant for all clients!)
+        $session = WorkoutSession::where('session_id', $sessionId)->first();
 
-        Log::info('Pausing workout for all members', [
-            'session_id' => $sessionId,
-            'paused_by' => $userId,
-            'paused_by_name' => $userName,
-            'paused_at' => time()
-        ]);
+        if (!$session) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Workout session not found'
+            ], 404);
+        }
 
-        // Broadcast workout pause to all members in session
+        if ($session->initiator_id !== $userId) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Only initiator can pause'
+            ], 403);
+        }
+
+        // Pause on server (single source of truth)
+        $session->pause();
+
+        $pausedAt = time();
+
+        // Get username for broadcast message
+        $lobby = WorkoutLobby::where('session_id', $sessionId)->first();
+        $member = $lobby?->members()->where('user_id', $userId)->first();
+        $userName = $member?->user_name ?? 'User';
+
+        // Broadcast pause with current server state
         broadcast(new \App\Events\WorkoutPaused(
             $sessionId,
             $userId,
             $userName,
-            time()
+            $pausedAt,
+            $session->getCurrentState()
         ));
+
+        Log::info('[SERVER-AUTH] Workout paused on server', [
+            'session_id' => $sessionId,
+            'paused_by' => $userId,
+            'time_remaining' => $session->time_remaining,
+            'phase' => $session->phase,
+        ]);
 
         return response()->json([
             'status' => 'success',
             'data' => [
                 'session_id' => $sessionId,
-                'paused_at' => time()
+                'paused_at' => $pausedAt,
+                'session_state' => $session->getCurrentState()
             ],
             'message' => 'Workout paused for all members'
         ]);
@@ -578,31 +609,55 @@ class GroupController extends Controller
     {
         $userId = $request->attributes->get('user_id');
 
-        // Get user info
-        $authService = new AuthService();
-        $userProfile = $authService->getUserProfile($request->bearerToken(), $userId);
-        $userName = $this->getUsernameFromProfile($userProfile, $userId);
+        // SERVER-AUTHORITATIVE: Resume the server session (instant for all clients!)
+        $session = WorkoutSession::where('session_id', $sessionId)->first();
 
-        Log::info('Resuming workout for all members', [
-            'session_id' => $sessionId,
-            'resumed_by' => $userId,
-            'resumed_by_name' => $userName,
-            'resumed_at' => time()
-        ]);
+        if (!$session) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Workout session not found'
+            ], 404);
+        }
 
-        // Broadcast workout resume to all members in session
+        if ($session->initiator_id !== $userId) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Only initiator can resume'
+            ], 403);
+        }
+
+        // Resume on server (server timer will start again)
+        $session->resume();
+
+        $resumedAt = time();
+
+        // Get username for broadcast message
+        $lobby = WorkoutLobby::where('session_id', $sessionId)->first();
+        $member = $lobby?->members()->where('user_id', $userId)->first();
+        $userName = $member?->user_name ?? 'User';
+
+        // Broadcast resume with current server state
         broadcast(new \App\Events\WorkoutResumed(
             $sessionId,
             $userId,
             $userName,
-            time()
+            $resumedAt,
+            $session->getCurrentState()
         ));
+
+        Log::info('[SERVER-AUTH] Workout resumed on server', [
+            'session_id' => $sessionId,
+            'resumed_by' => $userId,
+            'time_remaining' => $session->time_remaining,
+            'phase' => $session->phase,
+        ]);
 
         return response()->json([
             'status' => 'success',
             'data' => [
                 'session_id' => $sessionId,
-                'resumed_at' => time()
+                'resumed_at' => $resumedAt,
+                'session_state' => $session->getCurrentState()
             ],
             'message' => 'Workout resumed for all members'
         ]);
@@ -615,25 +670,45 @@ class GroupController extends Controller
     {
         $userId = $request->attributes->get('user_id');
 
-        // Get user info
-        $authService = new AuthService();
-        $userProfile = $authService->getUserProfile($request->bearerToken(), $userId);
-        $userName = $this->getUsernameFromProfile($userProfile, $userId);
+        // SERVER-AUTHORITATIVE: Stop the server session
+        $session = WorkoutSession::where('session_id', $sessionId)->first();
 
-        Log::info('Stopping workout for all members', [
-            'session_id' => $sessionId,
-            'stopped_by' => $userId,
-            'stopped_by_name' => $userName,
-            'stopped_at' => time()
-        ]);
+        if (!$session) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Workout session not found'
+            ], 404);
+        }
 
-        // Broadcast workout stop to all members in session
+        if ($session->initiator_id !== $userId) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Only initiator can stop'
+            ], 403);
+        }
+
+        // Stop on server (timer will no longer tick)
+        $session->stop();
+
+        $stoppedAt = time();
+
+        // Get username for broadcast message
+        $lobby = WorkoutLobby::where('session_id', $sessionId)->first();
+        $member = $lobby?->members()->where('user_id', $userId)->first();
+        $userName = $member?->user_name ?? 'User';
+
+        // Broadcast stop
         broadcast(new \App\Events\WorkoutStopped(
             $sessionId,
             $userId,
             $userName,
-            time()
+            $stoppedAt
         ));
+
+        Log::info('[SERVER-AUTH] Workout stopped on server', [
+            'session_id' => $sessionId,
+            'stopped_by' => $userId,
+        ]);
 
         return response()->json([
             'status' => 'success',

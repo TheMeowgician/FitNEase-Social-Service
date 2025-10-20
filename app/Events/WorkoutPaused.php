@@ -18,16 +18,24 @@ class WorkoutPaused implements ShouldBroadcast
     public $pausedBy;
     public $pausedByName;
     public $pausedAt;
+    public $sessionState;
 
     /**
      * Create a new event instance.
+     *
+     * @param string $sessionId Session ID
+     * @param int $pausedBy User ID who paused
+     * @param string $pausedByName Username who paused
+     * @param int $pausedAt Unix timestamp
+     * @param array $sessionState Exact workout state (time_remaining, phase, etc.) for synchronization
      */
-    public function __construct(string $sessionId, int $pausedBy, string $pausedByName, int $pausedAt)
+    public function __construct(string $sessionId, int $pausedBy, string $pausedByName, int $pausedAt, array $sessionState = [])
     {
         $this->sessionId = $sessionId;
         $this->pausedBy = $pausedBy;
         $this->pausedByName = $pausedByName;
         $this->pausedAt = $pausedAt;
+        $this->sessionState = $sessionState;
     }
 
     /**
@@ -59,6 +67,7 @@ class WorkoutPaused implements ShouldBroadcast
             'paused_by' => $this->pausedBy,
             'paused_by_name' => $this->pausedByName,
             'paused_at' => $this->pausedAt,
+            'session_state' => $this->sessionState, // Include exact state for perfect sync
         ];
     }
 }
