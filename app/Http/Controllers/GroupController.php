@@ -741,6 +741,20 @@ class GroupController extends Controller
             'finished_at' => time()
         ]);
 
+        // CRITICAL: Stop the backend timer by marking session as completed
+        $session = \App\Models\WorkoutSession::where('session_id', $sessionId)->first();
+        if ($session) {
+            $session->complete();
+            Log::info('Session marked as completed, timer will stop', [
+                'session_id' => $sessionId,
+                'status' => $session->status
+            ]);
+        } else {
+            Log::warning('Session not found when trying to finish', [
+                'session_id' => $sessionId
+            ]);
+        }
+
         // Broadcast workout completion to all members in session
         broadcast(new \App\Events\WorkoutCompleted(
             $sessionId,

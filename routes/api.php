@@ -212,6 +212,10 @@ Route::prefix('social/v2')->middleware([ValidateApiToken::class, 'throttle:api']
     Route::post('lobby/{sessionId}/kick', [LobbyController::class, 'kickMember'])
         ->middleware('throttle:moderation_actions');
 
+    // Transfer initiator role - Only initiator, moderate rate limit to prevent abuse
+    Route::post('lobby/{sessionId}/transfer-initiator', [LobbyController::class, 'transferInitiatorRole'])
+        ->middleware('throttle:moderation_actions');
+
 });
 
 // Service Communication Testing Routes (Protected)

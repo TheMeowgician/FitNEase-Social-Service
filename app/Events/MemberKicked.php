@@ -55,6 +55,7 @@ class MemberKicked implements ShouldBroadcast
     {
         return [
             'session_id' => $this->sessionId,
+            'kicked_user_id' => $this->kickedUserId,
             'timestamp' => $this->timestamp,
             'message' => 'You have been removed from the lobby',
         ];

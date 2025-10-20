@@ -229,6 +229,10 @@ class LobbyController extends Controller
 
             DB::commit();
 
+            // CRITICAL: Refresh lobby to get latest member data after commit
+            // Without this, buildLobbyState() may use cached relationship data
+            $lobby->refresh();
+
             // Broadcast lobby state
             broadcast(new LobbyStateChanged($sessionId, $this->buildLobbyState($lobby, $request->bearerToken())));
 
@@ -330,6 +334,10 @@ class LobbyController extends Controller
 
             DB::commit();
 
+            // CRITICAL: Refresh lobby to get latest member data after commit
+            // Without this, buildLobbyState() may use cached relationship data
+            $lobby->refresh();
+
             // Broadcast events
             $member = ['user_id' => $userId, 'user_name' => $userName, 'status' => 'waiting'];
             broadcast(new MemberJoined($sessionId, $member, $this->buildLobbyState($lobby, $request->bearerToken()), 1));
@@ -400,6 +408,16 @@ class LobbyController extends Controller
             // Remove member
             $lobby->removeMember($userId, 'user_left');
 
+            // Cancel any pending invitations for this user
+            WorkoutInvitation::forSession($sessionId)
+                ->forUser($userId)
+                ->where('status', 'pending')
+                ->update([
+                    'status' => 'cancelled',
+                    'response_reason' => 'User left the lobby',
+                    'responded_at' => now()
+                ]);
+
             // Add system message
             $lobby->addSystemMessage("{$userName} left the lobby");
 
@@ -432,6 +450,9 @@ class LobbyController extends Controller
             $lobby->autoCompleteIfEmpty();
 
             DB::commit();
+
+            // CRITICAL: Refresh lobby to get latest member data after commit
+            $lobby->refresh();
 
             // Broadcast events
             broadcast(new MemberLeft($sessionId, $userId, $userName, $this->buildLobbyState($lobby, $request->bearerToken()), 1));
@@ -1163,6 +1184,10 @@ class LobbyController extends Controller
 
             DB::commit();
 
+            // CRITICAL: Refresh lobby to get latest member data after commit
+            // Without this, buildLobbyState() may use cached relationship data
+            $lobby->refresh();
+
             // Broadcast events
             $member = ['user_id' => $userId, 'user_name' => $userName, 'status' => 'waiting'];
             broadcast(new MemberJoined($invitation->session_id, $member, $this->buildLobbyState($lobby, $request->bearerToken()), 1));
@@ -1376,10 +1401,32 @@ class LobbyController extends Controller
             // Remove member
             $lobby->removeMember($kickedUserId, 'kicked');
 
+            // CRITICAL: Cancel any pending invitations for this user in this lobby
+            // This prevents "duplicate invitation" errors when re-inviting after kick
+            $cancelledCount = WorkoutInvitation::forSession($sessionId)
+                ->forUser($kickedUserId)
+                ->where('status', 'pending')
+                ->update([
+                    'status' => 'cancelled',
+                    'response_reason' => 'User was removed from lobby',
+                    'responded_at' => now()
+                ]);
+
+            if ($cancelledCount > 0) {
+                Log::info('Cancelled pending invitations after kick', [
+                    'session_id' => $sessionId,
+                    'kicked_user_id' => $kickedUserId,
+                    'cancelled_count' => $cancelledCount
+                ]);
+            }
+
             // Add system message
             $lobby->addSystemMessage("{$kickedUserName} was removed from the lobby");
 
             DB::commit();
+
+            // CRITICAL: Refresh lobby to get latest member data after commit
+            $lobby->refresh();
 
             // Broadcast to kicked user's personal channel
             broadcast(new MemberKicked($sessionId, $kickedUserId, time()));
@@ -1411,6 +1458,133 @@ class LobbyController extends Controller
             return response()->json([
                 'status' => 'error',
                 'message' => 'Failed to remove member'
+            ], 500);
+        }
+    }
+
+    /**
+     * POST /api/social/v2/lobby/{sessionId}/transfer-initiator
+     *
+     * Transfer initiator role to another member (initiator only)
+     */
+    public function transferInitiatorRole(Request $request, string $sessionId): JsonResponse
+    {
+        $validator = Validator::make($request->all(), [
+            'new_initiator_id' => 'required|integer|min:1',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Validation failed',
+                'errors' => $validator->errors()
+            ], 422);
+        }
+
+        $currentInitiatorId = (int) $request->attributes->get('user_id');
+        $newInitiatorId = (int) $request->input('new_initiator_id');
+
+        try {
+            DB::beginTransaction();
+
+            $lobby = WorkoutLobby::where('session_id', $sessionId)->first();
+
+            if (!$lobby) {
+                DB::rollBack();
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Lobby not found'
+                ], 404);
+            }
+
+            // VALIDATION 1: Only current initiator can transfer role
+            if (!$lobby->isInitiator($currentInitiatorId)) {
+                DB::rollBack();
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Only the lobby leader can transfer the role'
+                ], 403);
+            }
+
+            // VALIDATION 2: Cannot transfer to yourself
+            if ($newInitiatorId === $currentInitiatorId) {
+                DB::rollBack();
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'You are already the lobby leader'
+                ], 400);
+            }
+
+            // VALIDATION 3: New initiator must be in lobby
+            if (!$lobby->hasMember($newInitiatorId)) {
+                DB::rollBack();
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'New leader must be a member of this lobby'
+                ], 404);
+            }
+
+            // Get user names
+            $oldInitiatorProfile = $this->authService->getUserProfile($request->bearerToken(), $currentInitiatorId);
+            $oldInitiatorName = $this->getUsernameFromProfile($oldInitiatorProfile, $currentInitiatorId);
+
+            $newInitiatorProfile = $this->authService->getUserProfile($request->bearerToken(), $newInitiatorId);
+            $newInitiatorName = $this->getUsernameFromProfile($newInitiatorProfile, $newInitiatorId);
+
+            // Transfer initiator role
+            $lobby->transferInitiator($newInitiatorId);
+
+            // Add system message
+            $lobby->addSystemMessage("{$newInitiatorName} is now the lobby leader");
+
+            DB::commit();
+
+            // CRITICAL: Refresh lobby to get latest data after commit
+            $lobby->refresh();
+
+            // Build updated lobby state
+            $lobbyState = $this->buildLobbyState($lobby, $request->bearerToken());
+
+            // Broadcast role transfer event
+            broadcast(new InitiatorRoleTransferred(
+                $sessionId,              // sessionId (string)
+                $currentInitiatorId,     // oldInitiatorId (int)
+                $newInitiatorId,         // newInitiatorId (int)
+                $newInitiatorName,       // newInitiatorName (string)
+                $lobbyState,             // lobbyState (array)
+                $lobby->version ?? 1     // version (int)
+            ));
+
+            // Also broadcast general state change
+            broadcast(new LobbyStateChanged($sessionId, $lobbyState));
+
+            Log::info('Initiator role transferred', [
+                'session_id' => $sessionId,
+                'old_initiator_id' => $currentInitiatorId,
+                'new_initiator_id' => $newInitiatorId,
+            ]);
+
+            return response()->json([
+                'status' => 'success',
+                'message' => 'Leader role transferred successfully',
+                'data' => [
+                    'lobby_state' => $lobbyState,
+                    'version' => $lobby->version
+                ]
+            ]);
+
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error('Failed to transfer initiator role', [
+                'error' => $e->getMessage(),
+                'session_id' => $sessionId,
+                'current_initiator_id' => $currentInitiatorId,
+                'new_initiator_id' => $newInitiatorId,
+            ]);
+
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Failed to transfer leader role'
             ], 500);
         }
     }
