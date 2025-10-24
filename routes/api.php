@@ -26,12 +26,12 @@ Route::get('/health', function () {
 });
 
 // Service-to-service endpoints (no auth required)
-Route::prefix('')->group(function () {
+Route::prefix('social')->group(function () {
     // Called by tracking service after workout completion to broadcast updated stats
     Route::post('/groups/{groupId}/broadcast-stats', [GroupController::class, 'broadcastGroupStats']);
 });
 
-Route::prefix('')->middleware([ValidateApiToken::class, 'throttle:api'])->group(function () {
+Route::prefix('social')->middleware([ValidateApiToken::class, 'throttle:api'])->group(function () {
 
     // Group Management
     Route::apiResource('groups', GroupController::class);
@@ -139,7 +139,7 @@ Route::prefix('')->middleware([ValidateApiToken::class, 'throttle:api'])->group(
 // ============================================================================
 // V2 API ROUTES (Event Sourced)
 // ============================================================================
-Route::prefix('v2')->middleware([ValidateApiToken::class, 'throttle:api'])->group(function () {
+Route::prefix('social/v2')->middleware([ValidateApiToken::class, 'throttle:api'])->group(function () {
 
     // ============================================================================
     // LOBBY MANAGEMENT (V2)
