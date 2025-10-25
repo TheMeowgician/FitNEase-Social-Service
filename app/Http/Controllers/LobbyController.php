@@ -408,15 +408,26 @@ class LobbyController extends Controller
             // Remove member
             $lobby->removeMember($userId, 'user_left');
 
-            // Cancel any pending invitations for this user
+            // CRITICAL: Cancel ALL pending invitations involving this user for this session
+            // This includes both:
+            // 1. Invitations sent TO this user (invited_user_id = $userId)
+            // 2. Invitations sent BY this user (initiator_id = $userId)
             WorkoutInvitation::forSession($sessionId)
-                ->forUser($userId)
                 ->where('status', 'pending')
+                ->where(function($query) use ($userId) {
+                    $query->where('invited_user_id', $userId)
+                          ->orWhere('initiator_id', $userId);
+                })
                 ->update([
                     'status' => 'cancelled',
                     'response_reason' => 'User left the lobby',
                     'responded_at' => now()
                 ]);
+
+            Log::info('[LEAVE LOBBY] Cancelled all pending invitations for user', [
+                'session_id' => $sessionId,
+                'user_id' => $userId,
+            ]);
 
             // Add system message
             $lobby->addSystemMessage("{$userName} left the lobby");
