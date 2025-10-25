@@ -233,6 +233,9 @@ class LobbyController extends Controller
             // Without this, buildLobbyState() may use cached relationship data
             $lobby->refresh();
 
+            // CRITICAL: Clear relationship cache to ensure fresh data
+            $lobby->unsetRelation('members');
+
             // Broadcast lobby state
             broadcast(new LobbyStateChanged($sessionId, $this->buildLobbyState($lobby, $request->bearerToken())));
 
@@ -338,6 +341,9 @@ class LobbyController extends Controller
             // Without this, buildLobbyState() may use cached relationship data
             $lobby->refresh();
 
+            // CRITICAL: Clear relationship cache to ensure fresh data
+            $lobby->unsetRelation('members');
+
             // Broadcast events
             $member = ['user_id' => $userId, 'user_name' => $userName, 'status' => 'waiting'];
             broadcast(new MemberJoined($sessionId, $member, $this->buildLobbyState($lobby, $request->bearerToken()), 1));
@@ -408,6 +414,11 @@ class LobbyController extends Controller
             // Remove member
             $lobby->removeMember($userId, 'user_left');
 
+            // CRITICAL: Clear relationship cache to prevent stale data
+            // Laravel caches relationships in memory - refresh() doesn't clear them!
+            // Without this, activeMembers() will still return the removed member
+            $lobby->unsetRelation('members');
+
             // CRITICAL: Cancel ALL pending invitations involving this user for this session
             // This includes both:
             // 1. Invitations sent TO this user (invited_user_id = $userId)
@@ -464,6 +475,10 @@ class LobbyController extends Controller
 
             // CRITICAL: Refresh lobby to get latest member data after commit
             $lobby->refresh();
+
+            // CRITICAL: Clear relationship cache again before broadcasting
+            // Ensures buildLobbyState() gets fresh member data from database
+            $lobby->unsetRelation('members');
 
             // Broadcast events
             broadcast(new MemberLeft($sessionId, $userId, $userName, $this->buildLobbyState($lobby, $request->bearerToken()), 1));
@@ -547,6 +562,9 @@ class LobbyController extends Controller
 
             // Reload lobby to get fresh state
             $lobby->refresh();
+
+            // CRITICAL: Clear relationship cache to ensure fresh data
+            $lobby->unsetRelation('members');
 
             // Broadcast events
             $lobbyState = $this->buildLobbyState($lobby, $request->bearerToken());
@@ -1199,6 +1217,9 @@ class LobbyController extends Controller
             // Without this, buildLobbyState() may use cached relationship data
             $lobby->refresh();
 
+            // CRITICAL: Clear relationship cache to ensure fresh data
+            $lobby->unsetRelation('members');
+
             // Broadcast events
             $member = ['user_id' => $userId, 'user_name' => $userName, 'status' => 'waiting'];
             broadcast(new MemberJoined($invitation->session_id, $member, $this->buildLobbyState($lobby, $request->bearerToken()), 1));
@@ -1412,6 +1433,9 @@ class LobbyController extends Controller
             // Remove member
             $lobby->removeMember($kickedUserId, 'kicked');
 
+            // CRITICAL: Clear relationship cache to prevent stale data
+            $lobby->unsetRelation('members');
+
             // CRITICAL: Cancel any pending invitations for this user in this lobby
             // This prevents "duplicate invitation" errors when re-inviting after kick
             $cancelledCount = WorkoutInvitation::forSession($sessionId)
@@ -1438,6 +1462,9 @@ class LobbyController extends Controller
 
             // CRITICAL: Refresh lobby to get latest member data after commit
             $lobby->refresh();
+
+            // CRITICAL: Clear relationship cache to ensure fresh data
+            $lobby->unsetRelation('members');
 
             // Broadcast to kicked user's personal channel
             broadcast(new MemberKicked($sessionId, $kickedUserId, time()));
