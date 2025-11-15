@@ -6,6 +6,7 @@ use App\Http\Controllers\GroupController;
 use App\Http\Controllers\GroupMemberController;
 use App\Http\Controllers\GroupWorkoutController;
 use App\Http\Controllers\LobbyController;
+use App\Http\Controllers\AgoraController;
 use App\Http\Controllers\ServiceTestController;
 use App\Http\Controllers\ServiceCommunicationTestController;
 use App\Http\Controllers\ServiceIntegrationDemoController;
@@ -134,6 +135,22 @@ Route::prefix('')->middleware([ValidateApiToken::class, 'throttle:api'])->group(
     Route::post('lobby/{sessionId}/kick', [LobbyController::class, 'kickMember'])
         ->middleware('throttle:moderation_actions');
 
+    // ============================================================================
+    // AGORA VIDEO CONFERENCING
+    // ============================================================================
+
+    // Generate Agora token for video call
+    Route::post('agora/token', [AgoraController::class, 'generateToken']);
+
+    // Revoke Agora token
+    Route::delete('agora/token', [AgoraController::class, 'revokeToken']);
+
+    // Get channel info and participants
+    Route::get('agora/channel/{sessionId}', [AgoraController::class, 'getChannelInfo']);
+
+    // Update media status (camera/mic on/off)
+    Route::patch('agora/media-status', [AgoraController::class, 'updateMediaStatus']);
+
 });
 
 // ============================================================================
@@ -215,6 +232,22 @@ Route::prefix('v2')->middleware([ValidateApiToken::class, 'throttle:api'])->grou
     // Transfer initiator role - Only initiator, moderate rate limit to prevent abuse
     Route::post('lobby/{sessionId}/transfer-initiator', [LobbyController::class, 'transferInitiatorRole'])
         ->middleware('throttle:moderation_actions');
+
+    // ============================================================================
+    // AGORA VIDEO CONFERENCING (V2)
+    // ============================================================================
+
+    // Generate Agora token for video call
+    Route::post('agora/token', [AgoraController::class, 'generateToken']);
+
+    // Revoke Agora token
+    Route::delete('agora/token', [AgoraController::class, 'revokeToken']);
+
+    // Get channel info and participants
+    Route::get('agora/channel/{sessionId}', [AgoraController::class, 'getChannelInfo']);
+
+    // Update media status (camera/mic on/off)
+    Route::patch('agora/media-status', [AgoraController::class, 'updateMediaStatus']);
 
 });
 
