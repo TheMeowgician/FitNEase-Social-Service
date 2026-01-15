@@ -29,6 +29,7 @@ class JoinRequestController extends Controller
     public function createJoinRequest(Request $request, string $groupId): JsonResponse
     {
         $userId = (int) $request->attributes->get('user_id');
+        $groupIdInt = (int) $groupId;
 
         $validator = Validator::make($request->all(), [
             'message' => 'nullable|string|max:500'
@@ -43,7 +44,7 @@ class JoinRequestController extends Controller
         }
 
         // Find the group
-        $group = Group::where('group_id', $groupId)->active()->first();
+        $group = Group::where('group_id', $groupIdInt)->active()->first();
 
         if (!$group) {
             return response()->json([
@@ -61,7 +62,7 @@ class JoinRequestController extends Controller
         }
 
         // Check if user is already a member
-        $existingMembership = GroupMember::where('group_id', $groupId)
+        $existingMembership = GroupMember::where('group_id', $groupIdInt)
             ->where('user_id', $userId)
             ->where('is_active', true)
             ->first();
@@ -74,7 +75,7 @@ class JoinRequestController extends Controller
         }
 
         // Check if user already has a pending request
-        $existingRequest = GroupJoinRequest::where('group_id', $groupId)
+        $existingRequest = GroupJoinRequest::where('group_id', $groupIdInt)
             ->where('user_id', $userId)
             ->pending()
             ->first();
@@ -91,7 +92,7 @@ class JoinRequestController extends Controller
 
             // Create join request
             $joinRequest = GroupJoinRequest::create([
-                'group_id' => $groupId,
+                'group_id' => $groupIdInt,
                 'user_id' => $userId,
                 'status' => 'pending',
                 'message' => $request->message,
@@ -105,7 +106,7 @@ class JoinRequestController extends Controller
 
             Log::info('Join request created', [
                 'request_id' => $joinRequest->request_id,
-                'group_id' => $groupId,
+                'group_id' => $groupIdInt,
                 'user_id' => $userId
             ]);
 
@@ -121,7 +122,7 @@ class JoinRequestController extends Controller
         } catch (\Exception $e) {
             DB::rollBack();
             Log::error('Failed to create join request', [
-                'group_id' => $groupId,
+                'group_id' => $groupIdInt,
                 'user_id' => $userId,
                 'error' => $e->getMessage()
             ]);
@@ -140,10 +141,17 @@ class JoinRequestController extends Controller
     public function getJoinRequests(Request $request, string $groupId): JsonResponse
     {
         $userId = (int) $request->attributes->get('user_id');
+        $groupIdInt = (int) $groupId;
         $token = $request->bearerToken();
 
+        Log::info('getJoinRequests called', [
+            'group_id' => $groupIdInt,
+            'user_id' => $userId,
+            'raw_group_id' => $groupId
+        ]);
+
         // Find the group
-        $group = Group::where('group_id', $groupId)->active()->first();
+        $group = Group::where('group_id', $groupIdInt)->active()->first();
 
         if (!$group) {
             return response()->json([
@@ -153,13 +161,31 @@ class JoinRequestController extends Controller
         }
 
         // Check if user is owner or moderator
-        $membership = GroupMember::where('group_id', $groupId)
+        $membership = GroupMember::where('group_id', $groupIdInt)
             ->where('user_id', $userId)
             ->where('is_active', true)
             ->whereIn('member_role', ['owner', 'moderator'])
             ->first();
 
+        Log::info('Membership check result', [
+            'group_id' => $groupIdInt,
+            'user_id' => $userId,
+            'found_membership' => $membership ? true : false,
+            'membership_role' => $membership?->member_role
+        ]);
+
         if (!$membership) {
+            // Debug: Check what memberships exist for this group
+            $allMemberships = GroupMember::where('group_id', $groupIdInt)
+                ->where('is_active', true)
+                ->get(['user_id', 'member_role']);
+
+            Log::warning('Permission denied - no owner/mod membership found', [
+                'group_id' => $groupIdInt,
+                'user_id' => $userId,
+                'existing_memberships' => $allMemberships->toArray()
+            ]);
+
             return response()->json([
                 'status' => 'error',
                 'message' => 'Only group owner or moderators can view join requests'
@@ -167,7 +193,7 @@ class JoinRequestController extends Controller
         }
 
         // Get pending requests
-        $requests = GroupJoinRequest::where('group_id', $groupId)
+        $requests = GroupJoinRequest::where('group_id', $groupIdInt)
             ->pending()
             ->orderBy('requested_at', 'desc')
             ->get();
@@ -202,9 +228,10 @@ class JoinRequestController extends Controller
     public function getJoinRequestCount(Request $request, string $groupId): JsonResponse
     {
         $userId = (int) $request->attributes->get('user_id');
+        $groupIdInt = (int) $groupId;
 
         // Check if user is owner or moderator
-        $membership = GroupMember::where('group_id', $groupId)
+        $membership = GroupMember::where('group_id', $groupIdInt)
             ->where('user_id', $userId)
             ->where('is_active', true)
             ->whereIn('member_role', ['owner', 'moderator'])
@@ -217,7 +244,7 @@ class JoinRequestController extends Controller
             ]);
         }
 
-        $count = GroupJoinRequest::where('group_id', $groupId)
+        $count = GroupJoinRequest::where('group_id', $groupIdInt)
             ->pending()
             ->count();
 
@@ -234,10 +261,12 @@ class JoinRequestController extends Controller
     public function approveJoinRequest(Request $request, string $groupId, string $requestId): JsonResponse
     {
         $userId = (int) $request->attributes->get('user_id');
+        $groupIdInt = (int) $groupId;
+        $requestIdInt = (int) $requestId;
         $token = $request->bearerToken();
 
         // Check if user is owner or moderator
-        $membership = GroupMember::where('group_id', $groupId)
+        $membership = GroupMember::where('group_id', $groupIdInt)
             ->where('user_id', $userId)
             ->where('is_active', true)
             ->whereIn('member_role', ['owner', 'moderator'])
@@ -251,8 +280,8 @@ class JoinRequestController extends Controller
         }
 
         // Find the request
-        $joinRequest = GroupJoinRequest::where('request_id', $requestId)
-            ->where('group_id', $groupId)
+        $joinRequest = GroupJoinRequest::where('request_id', $requestIdInt)
+            ->where('group_id', $groupIdInt)
             ->pending()
             ->first();
 
@@ -264,7 +293,7 @@ class JoinRequestController extends Controller
         }
 
         // Get the group
-        $group = Group::where('group_id', $groupId)->first();
+        $group = Group::where('group_id', $groupIdInt)->first();
 
         // Check if group is full
         if ($group->current_member_count >= $group->max_members) {
@@ -286,7 +315,7 @@ class JoinRequestController extends Controller
 
             // Add user as member
             $newMembership = GroupMember::create([
-                'group_id' => $groupId,
+                'group_id' => $groupIdInt,
                 'user_id' => $joinRequest->user_id,
                 'member_role' => 'member'
             ]);
@@ -297,11 +326,11 @@ class JoinRequestController extends Controller
             $this->notifyRequesterApproved($group, $joinRequest->user_id, $token);
 
             // Broadcast member update
-            $this->broadcastGroupMemberUpdate((int)$groupId, $token);
+            $this->broadcastGroupMemberUpdate($groupIdInt, $token);
 
             Log::info('Join request approved', [
-                'request_id' => $requestId,
-                'group_id' => $groupId,
+                'request_id' => $requestIdInt,
+                'group_id' => $groupIdInt,
                 'approved_by' => $userId,
                 'new_member' => $joinRequest->user_id
             ]);
@@ -317,7 +346,7 @@ class JoinRequestController extends Controller
         } catch (\Exception $e) {
             DB::rollBack();
             Log::error('Failed to approve join request', [
-                'request_id' => $requestId,
+                'request_id' => $requestIdInt,
                 'error' => $e->getMessage()
             ]);
 
@@ -335,6 +364,8 @@ class JoinRequestController extends Controller
     public function rejectJoinRequest(Request $request, string $groupId, string $requestId): JsonResponse
     {
         $userId = (int) $request->attributes->get('user_id');
+        $groupIdInt = (int) $groupId;
+        $requestIdInt = (int) $requestId;
         $token = $request->bearerToken();
 
         $validator = Validator::make($request->all(), [
@@ -342,7 +373,7 @@ class JoinRequestController extends Controller
         ]);
 
         // Check if user is owner or moderator
-        $membership = GroupMember::where('group_id', $groupId)
+        $membership = GroupMember::where('group_id', $groupIdInt)
             ->where('user_id', $userId)
             ->where('is_active', true)
             ->whereIn('member_role', ['owner', 'moderator'])
@@ -356,8 +387,8 @@ class JoinRequestController extends Controller
         }
 
         // Find the request
-        $joinRequest = GroupJoinRequest::where('request_id', $requestId)
-            ->where('group_id', $groupId)
+        $joinRequest = GroupJoinRequest::where('request_id', $requestIdInt)
+            ->where('group_id', $groupIdInt)
             ->pending()
             ->first();
 
@@ -369,7 +400,7 @@ class JoinRequestController extends Controller
         }
 
         // Get the group
-        $group = Group::where('group_id', $groupId)->first();
+        $group = Group::where('group_id', $groupIdInt)->first();
 
         try {
             // Update request status
@@ -384,8 +415,8 @@ class JoinRequestController extends Controller
             $this->notifyRequesterRejected($group, $joinRequest->user_id, $request->reason, $token);
 
             Log::info('Join request rejected', [
-                'request_id' => $requestId,
-                'group_id' => $groupId,
+                'request_id' => $requestIdInt,
+                'group_id' => $groupIdInt,
                 'rejected_by' => $userId
             ]);
 
@@ -396,7 +427,7 @@ class JoinRequestController extends Controller
 
         } catch (\Exception $e) {
             Log::error('Failed to reject join request', [
-                'request_id' => $requestId,
+                'request_id' => $requestIdInt,
                 'error' => $e->getMessage()
             ]);
 
@@ -445,8 +476,9 @@ class JoinRequestController extends Controller
     public function cancelJoinRequest(Request $request, string $groupId): JsonResponse
     {
         $userId = (int) $request->attributes->get('user_id');
+        $groupIdInt = (int) $groupId;
 
-        $joinRequest = GroupJoinRequest::where('group_id', $groupId)
+        $joinRequest = GroupJoinRequest::where('group_id', $groupIdInt)
             ->where('user_id', $userId)
             ->pending()
             ->first();
@@ -461,7 +493,7 @@ class JoinRequestController extends Controller
         $joinRequest->delete();
 
         Log::info('Join request cancelled', [
-            'group_id' => $groupId,
+            'group_id' => $groupIdInt,
             'user_id' => $userId
         ]);
 
