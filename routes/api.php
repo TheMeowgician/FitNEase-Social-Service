@@ -5,6 +5,7 @@ use Illuminate\Support\Facades\Route;
 use App\Http\Controllers\GroupController;
 use App\Http\Controllers\GroupMemberController;
 use App\Http\Controllers\GroupWorkoutController;
+use App\Http\Controllers\JoinRequestController;
 use App\Http\Controllers\LobbyController;
 use App\Http\Controllers\AgoraController;
 use App\Http\Controllers\ServiceTestController;
@@ -49,6 +50,15 @@ Route::prefix('')->middleware([ValidateApiToken::class, 'throttle:api'])->group(
     Route::put('groups/{groupId}/members/{userId}/role', [GroupMemberController::class, 'updateMemberRole']);
     Route::delete('groups/{groupId}/members/{userId}', [GroupMemberController::class, 'removeMember']);
     Route::get('groups/{groupId}/members', [GroupMemberController::class, 'getGroupMembers']);
+
+    // Join Requests (approval system)
+    Route::post('groups/{groupId}/join-requests', [JoinRequestController::class, 'createJoinRequest']);
+    Route::get('groups/{groupId}/join-requests', [JoinRequestController::class, 'getJoinRequests']);
+    Route::get('groups/{groupId}/join-requests/count', [JoinRequestController::class, 'getJoinRequestCount']);
+    Route::post('groups/{groupId}/join-requests/{requestId}/approve', [JoinRequestController::class, 'approveJoinRequest']);
+    Route::post('groups/{groupId}/join-requests/{requestId}/reject', [JoinRequestController::class, 'rejectJoinRequest']);
+    Route::delete('groups/{groupId}/join-requests', [JoinRequestController::class, 'cancelJoinRequest']);
+    Route::get('user/join-requests', [JoinRequestController::class, 'getUserJoinRequests']);
 
     // Group Workouts
     Route::get('group-workouts/{groupId}', [GroupWorkoutController::class, 'getGroupWorkouts']);
