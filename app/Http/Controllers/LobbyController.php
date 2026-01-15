@@ -1745,6 +1745,7 @@ class LobbyController extends Controller
             $userProfile = $token ? $this->authService->getUserProfile($token, $member->user_id) : null;
             $userName = $this->getUsernameFromProfile($userProfile, $member->user_id);
             $fitnessLevel = $userProfile['fitness_level'] ?? 'beginner';
+            $userRole = $userProfile['user_role'] ?? 'member'; // mentor or member badge
 
             return [
                 'user_id' => $member->user_id,
@@ -1752,6 +1753,7 @@ class LobbyController extends Controller
                 'status' => $member->status,
                 'joined_at' => $member->joined_at->timestamp,
                 'fitness_level' => $fitnessLevel,
+                'user_role' => $userRole,
             ];
         });
 

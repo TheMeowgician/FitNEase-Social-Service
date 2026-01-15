@@ -465,10 +465,12 @@ class GroupMemberController extends Controller
                 $member->first_name = $userProfile['first_name'] ?? null;
                 $member->last_name = $userProfile['last_name'] ?? null;
                 $member->profile_picture = $userProfile['profile_picture'] ?? null;
+                $member->user_role = $userProfile['user_role'] ?? 'member'; // mentor or member badge
             } else {
                 // If auth service fails, use user_id as username
                 $member->username = "User {$member->user_id}";
                 $member->profile_picture = null;
+                $member->user_role = 'member';
             }
 
             return $member;
@@ -577,13 +579,15 @@ class GroupMemberController extends Controller
             $userIds = $groupMembers->pluck('user_id')->toArray();
             $usernamesMap = $this->batchFetchUsernames($userIds);
 
-            // Map members with fetched usernames
+            // Map members with fetched usernames and user roles (mentor/member)
             $members = $groupMembers->map(function($member) use ($usernamesMap) {
+                $userData = $usernamesMap[$member->user_id] ?? null;
                 return [
                     'id' => $member->group_member_id, // Use correct primary key
                     'userId' => (string)$member->user_id,
-                    'username' => $usernamesMap[$member->user_id] ?? 'User ' . $member->user_id,
+                    'username' => is_array($userData) ? ($userData['username'] ?? 'User ' . $member->user_id) : ($userData ?? 'User ' . $member->user_id),
                     'role' => $member->member_role,
+                    'userRole' => is_array($userData) ? ($userData['user_role'] ?? 'member') : 'member', // mentor or member
                     'joinedAt' => $member->joined_at ? $member->joined_at->toISOString() : null,
                 ];
             })->toArray();
@@ -606,8 +610,8 @@ class GroupMemberController extends Controller
     }
 
     /**
-     * Batch fetch usernames for multiple users (MUCH more efficient than one-by-one)
-     * Returns array mapping user_id => username
+     * Batch fetch user profiles for multiple users (MUCH more efficient than one-by-one)
+     * Returns array mapping user_id => ['username' => ..., 'user_role' => ...]
      */
     private function batchFetchUsernames(array $userIds): array
     {
@@ -629,25 +633,27 @@ class GroupMemberController extends Controller
                 $data = json_decode($response->getBody(), true);
                 $profiles = $data['data'] ?? [];
 
-                // Create map of user_id => username
-                $usernamesMap = [];
+                // Create map of user_id => user data (username + user_role for mentor badge)
+                $usersMap = [];
                 foreach ($profiles as $profile) {
                     $userId = $profile['id'] ?? $profile['user_id'] ?? null;
-                    $username = $profile['username'] ?? null;
-                    if ($userId && $username) {
-                        $usernamesMap[$userId] = $username;
+                    if ($userId) {
+                        $usersMap[$userId] = [
+                            'username' => $profile['username'] ?? 'User ' . $userId,
+                            'user_role' => $profile['user_role'] ?? 'member',
+                        ];
                     }
                 }
 
-                \Log::info('Batch fetched usernames', [
+                \Log::info('Batch fetched user profiles', [
                     'requested' => count($userIds),
-                    'fetched' => count($usernamesMap)
+                    'fetched' => count($usersMap)
                 ]);
 
-                return $usernamesMap;
+                return $usersMap;
             }
         } catch (\Exception $e) {
-            \Log::error('Failed to batch fetch usernames', [
+            \Log::error('Failed to batch fetch user profiles', [
                 'user_ids' => $userIds,
                 'error' => $e->getMessage()
             ]);
