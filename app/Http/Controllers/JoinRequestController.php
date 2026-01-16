@@ -164,7 +164,7 @@ class JoinRequestController extends Controller
         $membership = GroupMember::where('group_id', $groupIdInt)
             ->where('user_id', $userId)
             ->where('is_active', true)
-            ->whereIn('member_role', ['owner', 'moderator'])
+            ->whereIn('member_role', ['admin', 'owner', 'moderator'])
             ->first();
 
         Log::info('Membership check result', [
@@ -234,7 +234,7 @@ class JoinRequestController extends Controller
         $membership = GroupMember::where('group_id', $groupIdInt)
             ->where('user_id', $userId)
             ->where('is_active', true)
-            ->whereIn('member_role', ['owner', 'moderator'])
+            ->whereIn('member_role', ['admin', 'owner', 'moderator'])
             ->first();
 
         if (!$membership) {
@@ -269,7 +269,7 @@ class JoinRequestController extends Controller
         $membership = GroupMember::where('group_id', $groupIdInt)
             ->where('user_id', $userId)
             ->where('is_active', true)
-            ->whereIn('member_role', ['owner', 'moderator'])
+            ->whereIn('member_role', ['admin', 'owner', 'moderator'])
             ->first();
 
         if (!$membership) {
@@ -376,7 +376,7 @@ class JoinRequestController extends Controller
         $membership = GroupMember::where('group_id', $groupIdInt)
             ->where('user_id', $userId)
             ->where('is_active', true)
-            ->whereIn('member_role', ['owner', 'moderator'])
+            ->whereIn('member_role', ['admin', 'owner', 'moderator'])
             ->first();
 
         if (!$membership) {
