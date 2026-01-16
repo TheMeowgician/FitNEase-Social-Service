@@ -514,9 +514,9 @@ class JoinRequestController extends Controller
             $requesterUsername = $requesterProfile['username'] ?? 'Someone';
             $requesterRole = $requesterProfile['user_role'] ?? 'member';
 
-            // Get group owner
+            // Get group owner (admin is the owner role in this database)
             $owner = GroupMember::where('group_id', $group->group_id)
-                ->where('member_role', 'owner')
+                ->whereIn('member_role', ['admin', 'owner'])
                 ->where('is_active', true)
                 ->first();
 
