@@ -313,12 +313,27 @@ class JoinRequestController extends Controller
                 'responded_at' => now(),
             ]);
 
-            // Add user as member
-            $newMembership = GroupMember::create([
-                'group_id' => $groupIdInt,
-                'user_id' => $joinRequest->user_id,
-                'member_role' => 'member'
-            ]);
+            // Check if user has an existing inactive membership (was previously removed)
+            $existingMembership = GroupMember::where('group_id', $groupIdInt)
+                ->where('user_id', $joinRequest->user_id)
+                ->first();
+
+            if ($existingMembership) {
+                // Reactivate existing membership
+                $existingMembership->update([
+                    'is_active' => true,
+                    'member_role' => 'member',
+                    'joined_at' => now()
+                ]);
+                $newMembership = $existingMembership;
+            } else {
+                // Create new membership
+                $newMembership = GroupMember::create([
+                    'group_id' => $groupIdInt,
+                    'user_id' => $joinRequest->user_id,
+                    'member_role' => 'member'
+                ]);
+            }
 
             DB::commit();
 
