@@ -14,6 +14,7 @@ use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
 use App\Services\AuthService;
 use App\Services\CommunicationsService;
+use App\Services\TrackingService;
 use App\Events\GroupWorkoutInvitation;
 use App\Events\GroupStatsUpdated;
 use Carbon\Carbon;
@@ -147,6 +148,46 @@ class GroupController extends Controller
         $groupData = $group->toArray();
         $groupData['user_membership'] = $this->getUserMembership($groupId, $request->attributes->get('user_id'));
         $groupData['activity_level'] = $this->calculateGroupActivityLevel($groupId);
+
+        // Fetch group stats from tracking service
+        try {
+            $trackingService = app(TrackingService::class);
+            $stats = $trackingService->getGroupStats($groupId);
+
+            if ($stats) {
+                $groupData['stats'] = [
+                    'total_workouts' => $stats['total_workouts'] ?? 0,
+                    'total_minutes' => $stats['total_minutes'] ?? 0,
+                    'weekly_average' => $stats['weekly_average'] ?? 0,
+                    'this_week_sessions' => $stats['this_week_sessions'] ?? 0,
+                    'unique_participants' => $stats['unique_participants'] ?? 0,
+                    'total_calories' => $stats['total_calories'] ?? 0,
+                ];
+            } else {
+                // Default stats if tracking service is unavailable
+                $groupData['stats'] = [
+                    'total_workouts' => 0,
+                    'total_minutes' => 0,
+                    'weekly_average' => 0,
+                    'this_week_sessions' => 0,
+                    'unique_participants' => 0,
+                    'total_calories' => 0,
+                ];
+            }
+        } catch (\Exception $e) {
+            Log::warning('Failed to fetch group stats from tracking service', [
+                'group_id' => $groupId,
+                'error' => $e->getMessage()
+            ]);
+            $groupData['stats'] = [
+                'total_workouts' => 0,
+                'total_minutes' => 0,
+                'weekly_average' => 0,
+                'this_week_sessions' => 0,
+                'unique_participants' => 0,
+                'total_calories' => 0,
+            ];
+        }
 
         return response()->json([
             'status' => 'success',

@@ -118,6 +118,58 @@ class TrackingService
     }
 
     /**
+     * Get group workout statistics from tracking service
+     */
+    public function getGroupStats(string $groupId): ?array
+    {
+        try {
+            Log::info('Requesting group stats from tracking service', [
+                'service' => 'fitnease-social',
+                'target_service' => 'fitnease-tracking',
+                'group_id' => $groupId
+            ]);
+
+            // Use internal endpoint (no auth required for service-to-service)
+            $response = Http::timeout(10)->withHeaders([
+                'Accept' => 'application/json',
+            ])->get($this->baseUrl . "/api/internal/group-stats/{$groupId}");
+
+            if ($response->successful()) {
+                $statsData = $response->json();
+
+                Log::info('Group stats retrieved successfully', [
+                    'service' => 'fitnease-social',
+                    'target_service' => 'fitnease-tracking',
+                    'group_id' => $groupId,
+                    'stats' => $statsData['data'] ?? null
+                ]);
+
+                return $statsData['data'] ?? null;
+            }
+
+            Log::warning('Failed to retrieve group stats', [
+                'service' => 'fitnease-social',
+                'target_service' => 'fitnease-tracking',
+                'group_id' => $groupId,
+                'status_code' => $response->status(),
+                'response_body' => $response->body()
+            ]);
+
+            return null;
+
+        } catch (\Exception $e) {
+            Log::error('Error communicating with tracking service for group stats', [
+                'service' => 'fitnease-social',
+                'target_service' => 'fitnease-tracking',
+                'group_id' => $groupId,
+                'error' => $e->getMessage()
+            ]);
+
+            return null;
+        }
+    }
+
+    /**
      * Get group leaderboard data
      */
     public function getGroupLeaderboard(string $token, array $leaderboardData): ?array
