@@ -22,9 +22,17 @@ class RateLimitServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
-        // Default API rate limit: 60 requests per minute per user
+        // Default API rate limit: 200 requests per minute per user
+        // Increased from 60 to prevent rate limiting on mobile app reloads
         RateLimiter::for('api', function (Request $request) {
-            return Limit::perMinute(60)->by($request->attributes->get('user_id') ?? $request->ip());
+            return Limit::perMinute(200)->by($request->attributes->get('user_id') ?? $request->ip())
+                ->response(function (Request $request, array $headers) {
+                    return response()->json([
+                        'status' => 'error',
+                        'message' => 'Too many requests. Please wait a moment and try again.',
+                        'retry_after' => $headers['Retry-After'] ?? 60,
+                    ], 429);
+                });
         });
 
         // Lobby creation rate limit: 100 lobbies per hour per user (increased for development)
