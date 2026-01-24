@@ -2234,6 +2234,28 @@ class LobbyController extends Controller
                 'response' => $response,
             ]);
 
+            // CRITICAL: If user accepted, also set their lobby status to 'ready'
+            if ($response === 'accepted') {
+                $member = $lobby->activeMembers()->where('user_id', $userId)->first();
+                $oldStatus = $member ? $member->status : 'waiting';
+
+                if ($oldStatus !== 'ready') {
+                    $lobby->updateMemberStatus($userId, 'ready');
+                    $lobby->refresh();
+                    $lobby->unsetRelation('members');
+
+                    // Broadcast status update
+                    $lobbyState = $this->buildLobbyState($lobby, $request->bearerToken());
+                    broadcast(new MemberStatusUpdated($sessionId, $userId, $oldStatus, 'ready', $lobbyState, 1));
+                    broadcast(new LobbyStateChanged($sessionId, $lobbyState));
+
+                    Log::info('[READY CHECK] Member status set to ready', [
+                        'session_id' => $sessionId,
+                        'user_id' => $userId,
+                    ]);
+                }
+            }
+
             // Check if someone declined - fail immediately
             if ($response === 'declined') {
                 Cache::forget($cacheKey);
