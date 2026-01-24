@@ -17,7 +17,12 @@ use App\Events\MemberKicked;
 use App\Events\LobbyDeleted;
 use App\Events\InitiatorRoleTransferred;
 use App\Events\WorkoutStarted;
+use App\Events\ReadyCheckStarted;
+use App\Events\ReadyCheckResponse;
+use App\Events\ReadyCheckComplete;
+use App\Events\ReadyCheckCancelled;
 use App\Services\AuthService;
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\DB;
@@ -1971,5 +1976,411 @@ class LobbyController extends Controller
         }
 
         return $userProfile['username'] ?? $userProfile['email'] ?? 'User ' . $userId;
+    }
+
+    // ============================================================================
+    // READY CHECK METHODS
+    // ============================================================================
+
+    /**
+     * POST /api/v2/lobby/{sessionId}/ready-check/start
+     *
+     * Start a ready check for all lobby members.
+     * Only the initiator can start a ready check.
+     * Members have a limited time to respond (default 25 seconds).
+     */
+    public function startReadyCheck(Request $request, string $sessionId): JsonResponse
+    {
+        $validator = Validator::make($request->all(), [
+            'timeout_seconds' => 'sometimes|integer|min:10|max:60',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Validation failed',
+                'errors' => $validator->errors()
+            ], 422);
+        }
+
+        $userId = (int) $request->attributes->get('user_id');
+        $timeoutSeconds = (int) $request->input('timeout_seconds', 25);
+
+        try {
+            $lobby = WorkoutLobby::where('session_id', $sessionId)->first();
+
+            if (!$lobby) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Lobby not found'
+                ], 404);
+            }
+
+            // VALIDATION 1: Only initiator can start ready check
+            if (!$lobby->isInitiator($userId)) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Only the lobby leader can start a ready check'
+                ], 403);
+            }
+
+            // VALIDATION 2: Lobby must be active
+            if (!$lobby->is_active) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Lobby is no longer active'
+                ], 410);
+            }
+
+            // VALIDATION 3: Need at least 2 members
+            $activeMembers = $lobby->activeMembers()->get();
+            if ($activeMembers->count() < 2) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Need at least 2 members to start a ready check'
+                ], 400);
+            }
+
+            // VALIDATION 4: Check if ready check is already active
+            $cacheKey = "ready_check:{$sessionId}";
+            if (Cache::has($cacheKey)) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'A ready check is already in progress'
+                ], 409);
+            }
+
+            // Get initiator info
+            $initiatorProfile = $this->authService->getUserProfile($request->bearerToken(), $userId);
+            $initiatorName = $this->getUsernameFromProfile($initiatorProfile, $userId);
+
+            // Build member list for the ready check
+            $members = $activeMembers->map(function ($member) use ($request) {
+                $userProfile = $this->authService->getUserProfile($request->bearerToken(), $member->user_id);
+                $userName = $this->getUsernameFromProfile($userProfile, $member->user_id);
+                return [
+                    'user_id' => $member->user_id,
+                    'user_name' => $userName,
+                ];
+            })->toArray();
+
+            // Create ready check record in cache
+            $readyCheckId = Str::uuid()->toString();
+            $readyCheckData = [
+                'ready_check_id' => $readyCheckId,
+                'session_id' => $sessionId,
+                'initiator_id' => $userId,
+                'started_at' => time(),
+                'expires_at' => time() + $timeoutSeconds,
+                'timeout_seconds' => $timeoutSeconds,
+                'responses' => [], // userId => response ('accepted' or 'declined')
+                'members' => $members,
+            ];
+
+            // Store in cache with TTL slightly longer than timeout
+            Cache::put($cacheKey, $readyCheckData, $timeoutSeconds + 10);
+
+            // Broadcast ready check started event
+            broadcast(new ReadyCheckStarted(
+                $sessionId,
+                $userId,
+                $initiatorName,
+                $members,
+                $timeoutSeconds,
+                $readyCheckId
+            ));
+
+            // Add system message
+            $lobby->addSystemMessage("{$initiatorName} started a ready check ({$timeoutSeconds}s)");
+
+            Log::info('[READY CHECK] Started', [
+                'session_id' => $sessionId,
+                'ready_check_id' => $readyCheckId,
+                'initiator_id' => $userId,
+                'member_count' => count($members),
+                'timeout_seconds' => $timeoutSeconds,
+            ]);
+
+            return response()->json([
+                'status' => 'success',
+                'message' => 'Ready check started',
+                'data' => [
+                    'ready_check_id' => $readyCheckId,
+                    'expires_at' => time() + $timeoutSeconds,
+                ]
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('[READY CHECK] Failed to start', [
+                'error' => $e->getMessage(),
+                'session_id' => $sessionId,
+                'user_id' => $userId,
+            ]);
+
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Failed to start ready check'
+            ], 500);
+        }
+    }
+
+    /**
+     * POST /api/v2/lobby/{sessionId}/ready-check/respond
+     *
+     * Respond to an active ready check (accept or decline).
+     * All members must respond before the timeout.
+     */
+    public function respondToReadyCheck(Request $request, string $sessionId): JsonResponse
+    {
+        $validator = Validator::make($request->all(), [
+            'response' => 'required|in:accepted,declined',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Validation failed',
+                'errors' => $validator->errors()
+            ], 422);
+        }
+
+        $userId = (int) $request->attributes->get('user_id');
+        $response = $request->input('response');
+
+        try {
+            $lobby = WorkoutLobby::where('session_id', $sessionId)->first();
+
+            if (!$lobby) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Lobby not found'
+                ], 404);
+            }
+
+            // VALIDATION 1: User must be in lobby
+            if (!$lobby->hasMember($userId)) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'You are not in this lobby'
+                ], 403);
+            }
+
+            // VALIDATION 2: Check if ready check is active
+            $cacheKey = "ready_check:{$sessionId}";
+            $readyCheckData = Cache::get($cacheKey);
+
+            if (!$readyCheckData) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'No active ready check found'
+                ], 404);
+            }
+
+            // VALIDATION 3: Check if ready check has expired
+            if (time() > $readyCheckData['expires_at']) {
+                Cache::forget($cacheKey);
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Ready check has expired'
+                ], 410);
+            }
+
+            // VALIDATION 4: Check if user already responded
+            if (isset($readyCheckData['responses'][$userId])) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'You have already responded to this ready check'
+                ], 409);
+            }
+
+            // Get user info
+            $userProfile = $this->authService->getUserProfile($request->bearerToken(), $userId);
+            $userName = $this->getUsernameFromProfile($userProfile, $userId);
+
+            // Record response
+            $readyCheckData['responses'][$userId] = $response;
+            Cache::put($cacheKey, $readyCheckData, $readyCheckData['expires_at'] - time() + 10);
+
+            // Broadcast response event
+            broadcast(new ReadyCheckResponse(
+                $sessionId,
+                $readyCheckData['ready_check_id'],
+                $userId,
+                $userName,
+                $response
+            ));
+
+            Log::info('[READY CHECK] Response received', [
+                'session_id' => $sessionId,
+                'ready_check_id' => $readyCheckData['ready_check_id'],
+                'user_id' => $userId,
+                'response' => $response,
+            ]);
+
+            // Check if someone declined - fail immediately
+            if ($response === 'declined') {
+                Cache::forget($cacheKey);
+
+                // Broadcast ready check failed
+                broadcast(new ReadyCheckComplete(
+                    $sessionId,
+                    $readyCheckData['ready_check_id'],
+                    false,
+                    'declined',
+                    $readyCheckData['responses']
+                ));
+
+                // Add system message
+                $lobby->addSystemMessage("Ready check failed - {$userName} is not ready");
+
+                Log::info('[READY CHECK] Failed - user declined', [
+                    'session_id' => $sessionId,
+                    'declined_by' => $userId,
+                ]);
+
+                return response()->json([
+                    'status' => 'success',
+                    'message' => 'Response recorded - ready check failed',
+                    'data' => [
+                        'all_accepted' => false,
+                        'responses' => $readyCheckData['responses'],
+                    ]
+                ]);
+            }
+
+            // Check if all members have accepted
+            $totalMembers = count($readyCheckData['members']);
+            $acceptedCount = count(array_filter($readyCheckData['responses'], fn($r) => $r === 'accepted'));
+
+            if ($acceptedCount === $totalMembers) {
+                Cache::forget($cacheKey);
+
+                // Broadcast ready check success
+                broadcast(new ReadyCheckComplete(
+                    $sessionId,
+                    $readyCheckData['ready_check_id'],
+                    true,
+                    'all_accepted',
+                    $readyCheckData['responses']
+                ));
+
+                // Add system message
+                $lobby->addSystemMessage("Ready check passed! All members are ready.");
+
+                Log::info('[READY CHECK] Success - all accepted', [
+                    'session_id' => $sessionId,
+                    'ready_check_id' => $readyCheckData['ready_check_id'],
+                ]);
+
+                return response()->json([
+                    'status' => 'success',
+                    'message' => 'Response recorded - all members ready!',
+                    'data' => [
+                        'all_accepted' => true,
+                        'responses' => $readyCheckData['responses'],
+                    ]
+                ]);
+            }
+
+            return response()->json([
+                'status' => 'success',
+                'message' => 'Response recorded',
+                'data' => [
+                    'all_accepted' => false,
+                    'responses' => $readyCheckData['responses'],
+                    'accepted_count' => $acceptedCount,
+                    'total_members' => $totalMembers,
+                ]
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('[READY CHECK] Failed to respond', [
+                'error' => $e->getMessage(),
+                'session_id' => $sessionId,
+                'user_id' => $userId,
+            ]);
+
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Failed to respond to ready check'
+            ], 500);
+        }
+    }
+
+    /**
+     * POST /api/v2/lobby/{sessionId}/ready-check/cancel
+     *
+     * Cancel an active ready check (initiator only).
+     */
+    public function cancelReadyCheck(Request $request, string $sessionId): JsonResponse
+    {
+        $userId = (int) $request->attributes->get('user_id');
+
+        try {
+            $lobby = WorkoutLobby::where('session_id', $sessionId)->first();
+
+            if (!$lobby) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Lobby not found'
+                ], 404);
+            }
+
+            // VALIDATION 1: Only initiator can cancel
+            if (!$lobby->isInitiator($userId)) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Only the lobby leader can cancel a ready check'
+                ], 403);
+            }
+
+            // VALIDATION 2: Check if ready check exists
+            $cacheKey = "ready_check:{$sessionId}";
+            $readyCheckData = Cache::get($cacheKey);
+
+            if (!$readyCheckData) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'No active ready check found'
+                ], 404);
+            }
+
+            // Remove from cache
+            Cache::forget($cacheKey);
+
+            // Broadcast cancellation
+            broadcast(new ReadyCheckCancelled(
+                $sessionId,
+                $readyCheckData['ready_check_id'],
+                $userId,
+                'initiator_cancelled'
+            ));
+
+            // Add system message
+            $lobby->addSystemMessage("Ready check cancelled by the lobby leader");
+
+            Log::info('[READY CHECK] Cancelled', [
+                'session_id' => $sessionId,
+                'ready_check_id' => $readyCheckData['ready_check_id'],
+                'cancelled_by' => $userId,
+            ]);
+
+            return response()->json([
+                'status' => 'success',
+                'message' => 'Ready check cancelled'
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('[READY CHECK] Failed to cancel', [
+                'error' => $e->getMessage(),
+                'session_id' => $sessionId,
+                'user_id' => $userId,
+            ]);
+
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Failed to cancel ready check'
+            ], 500);
+        }
     }
 }

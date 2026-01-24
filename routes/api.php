@@ -244,6 +244,20 @@ Route::prefix('v2')->middleware([ValidateApiToken::class, 'throttle:api'])->grou
         ->middleware('throttle:moderation_actions');
 
     // ============================================================================
+    // READY CHECK (V2)
+    // ============================================================================
+
+    // Start ready check - Only initiator, rate limited
+    Route::post('lobby/{sessionId}/ready-check/start', [LobbyController::class, 'startReadyCheck'])
+        ->middleware('throttle:moderation_actions');
+
+    // Respond to ready check - Any lobby member
+    Route::post('lobby/{sessionId}/ready-check/respond', [LobbyController::class, 'respondToReadyCheck']);
+
+    // Cancel ready check - Only initiator
+    Route::post('lobby/{sessionId}/ready-check/cancel', [LobbyController::class, 'cancelReadyCheck']);
+
+    // ============================================================================
     // AGORA VIDEO CONFERENCING (V2)
     // ============================================================================
 
