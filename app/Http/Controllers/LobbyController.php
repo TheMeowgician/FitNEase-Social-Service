@@ -2016,11 +2016,11 @@ class LobbyController extends Controller
                 ], 404);
             }
 
-            // VALIDATION 1: Only initiator can start ready check
-            if (!$lobby->isInitiator($userId)) {
+            // VALIDATION 1: User must be a member of the lobby
+            if (!$lobby->hasMember($userId)) {
                 return response()->json([
                     'status' => 'error',
-                    'message' => 'Only the lobby leader can start a ready check'
+                    'message' => 'You are not a member of this lobby'
                 ], 403);
             }
 
@@ -2043,11 +2043,28 @@ class LobbyController extends Controller
 
             // VALIDATION 4: Check if ready check is already active
             $cacheKey = "ready_check:{$sessionId}";
-            if (Cache::has($cacheKey)) {
-                return response()->json([
-                    'status' => 'error',
-                    'message' => 'A ready check is already in progress'
-                ], 409);
+            $existingReadyCheck = Cache::get($cacheKey);
+
+            if ($existingReadyCheck) {
+                // Check if the existing ready check has expired
+                $expiresAt = $existingReadyCheck['expires_at'] ?? 0;
+
+                if (time() < $expiresAt) {
+                    // Ready check is still active
+                    return response()->json([
+                        'status' => 'error',
+                        'message' => 'A ready check is already in progress'
+                    ], 409);
+                }
+
+                // Ready check has expired - clear it and allow a new one
+                Log::info('[READY CHECK] Clearing expired ready check', [
+                    'session_id' => $sessionId,
+                    'old_ready_check_id' => $existingReadyCheck['ready_check_id'] ?? 'unknown',
+                    'expired_at' => $expiresAt,
+                    'current_time' => time(),
+                ]);
+                Cache::forget($cacheKey);
             }
 
             // Get initiator info
