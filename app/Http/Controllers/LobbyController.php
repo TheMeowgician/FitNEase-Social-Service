@@ -24,6 +24,7 @@ use App\Events\ReadyCheckCancelled;
 use App\Events\VotingStarted;
 use App\Events\VoteSubmitted;
 use App\Events\VotingComplete;
+use App\Events\ExerciseSwapped;
 use App\Services\AuthService;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Http\Request;
@@ -2870,5 +2871,133 @@ class LobbyController extends Controller
         WorkoutLobby $lobby
     ): void {
         $this->completeVotingNow($sessionId, $votingData, $lobby, 'timeout');
+    }
+
+    /**
+     * Swap an exercise in the workout during group customization
+     *
+     * POST /api/v2/lobby/{sessionId}/exercises/swap
+     *
+     * This endpoint is only available after the group has voted "customize".
+     * Only the initiator/mentor can swap exercises.
+     * The swap is broadcast to all members in real-time.
+     */
+    public function swapExercise(Request $request, string $sessionId): JsonResponse
+    {
+        $validator = Validator::make($request->all(), [
+            'slot_index' => 'required|integer|min:0',
+            'new_exercise' => 'required|array',
+            'new_exercise.exercise_id' => 'required|integer',
+            'new_exercise.exercise_name' => 'required|string',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Validation failed',
+                'errors' => $validator->errors()
+            ], 422);
+        }
+
+        $userId = (int) $request->attributes->get('user_id');
+        $slotIndex = $request->input('slot_index');
+        $newExercise = $request->input('new_exercise');
+
+        try {
+            $lobby = WorkoutLobby::where('session_id', $sessionId)->first();
+
+            if (!$lobby) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Lobby not found'
+                ], 404);
+            }
+
+            // VALIDATION 1: User must be the initiator (mentor control)
+            if ($lobby->initiator_id !== $userId) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Only the lobby initiator can swap exercises'
+                ], 403);
+            }
+
+            // VALIDATION 2: Lobby must have exercises
+            $workoutData = $lobby->workout_data;
+            if (!isset($workoutData['exercises']) || empty($workoutData['exercises'])) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'No exercises to swap'
+                ], 400);
+            }
+
+            // VALIDATION 3: Slot index must be valid
+            if ($slotIndex >= count($workoutData['exercises'])) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Invalid slot index'
+                ], 400);
+            }
+
+            // Get user info for broadcast
+            $userProfile = $this->authService->getUserProfile($request->bearerToken(), $userId);
+            $userName = $this->getUsernameFromProfile($userProfile, $userId);
+
+            // Store old exercise for broadcast
+            $oldExercise = $workoutData['exercises'][$slotIndex];
+
+            // Perform the swap
+            $workoutData['exercises'][$slotIndex] = $newExercise;
+
+            // Update lobby in database
+            $lobby->update(['workout_data' => $workoutData]);
+
+            // Broadcast exercise swapped event
+            broadcast(new ExerciseSwapped(
+                $sessionId,
+                $slotIndex,
+                $oldExercise,
+                $newExercise,
+                $userId,
+                $userName,
+                $workoutData['exercises']
+            ));
+
+            // Also broadcast LobbyStateChanged for full state sync
+            broadcast(new LobbyStateChanged(
+                $sessionId,
+                $lobby->buildLobbyState()
+            ));
+
+            Log::info("Exercise swapped in lobby", [
+                'session_id' => $sessionId,
+                'slot_index' => $slotIndex,
+                'old_exercise' => $oldExercise['exercise_name'] ?? 'unknown',
+                'new_exercise' => $newExercise['exercise_name'],
+                'swapped_by' => $userId,
+            ]);
+
+            return response()->json([
+                'status' => 'success',
+                'message' => 'Exercise swapped successfully',
+                'data' => [
+                    'slot_index' => $slotIndex,
+                    'old_exercise' => $oldExercise,
+                    'new_exercise' => $newExercise,
+                    'updated_exercises' => $workoutData['exercises'],
+                ]
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error("Failed to swap exercise", [
+                'session_id' => $sessionId,
+                'user_id' => $userId,
+                'error' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Failed to swap exercise'
+            ], 500);
+        }
     }
 }
