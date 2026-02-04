@@ -21,6 +21,9 @@ use App\Events\ReadyCheckStarted;
 use App\Events\ReadyCheckResponse;
 use App\Events\ReadyCheckComplete;
 use App\Events\ReadyCheckCancelled;
+use App\Events\VotingStarted;
+use App\Events\VoteSubmitted;
+use App\Events\VotingComplete;
 use App\Services\AuthService;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Http\Request;
@@ -2421,5 +2424,451 @@ class LobbyController extends Controller
                 'message' => 'Failed to cancel ready check'
             ], 500);
         }
+    }
+
+    // ============================================================================
+    // VOTING METHODS
+    // ============================================================================
+
+    /**
+     * POST /api/v2/lobby/{sessionId}/voting/start
+     *
+     * Start voting after exercises are generated.
+     * Members vote to 'accept' recommended exercises or 'customize'.
+     * Majority wins. Default is 'accept' if member doesn't vote within timeout.
+     */
+    public function startVoting(Request $request, string $sessionId): JsonResponse
+    {
+        $validator = Validator::make($request->all(), [
+            'exercises' => 'required|array',
+            'alternative_pool' => 'sometimes|array',
+            'timeout_seconds' => 'sometimes|integer|min:30|max:120',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Validation failed',
+                'errors' => $validator->errors()
+            ], 422);
+        }
+
+        $userId = (int) $request->attributes->get('user_id');
+        $timeoutSeconds = (int) $request->input('timeout_seconds', 60);
+        $exercises = $request->input('exercises', []);
+        $alternativePool = $request->input('alternative_pool', []);
+
+        try {
+            $lobby = WorkoutLobby::where('session_id', $sessionId)->first();
+
+            if (!$lobby) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Lobby not found'
+                ], 404);
+            }
+
+            // VALIDATION 1: User must be a member of the lobby
+            if (!$lobby->hasMember($userId)) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'You are not a member of this lobby'
+                ], 403);
+            }
+
+            // VALIDATION 2: Lobby must be active
+            if (!$lobby->is_active) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Lobby is no longer active'
+                ], 410);
+            }
+
+            // VALIDATION 3: Check if voting is already active
+            $cacheKey = "voting:{$sessionId}";
+            $existingVoting = Cache::get($cacheKey);
+
+            if ($existingVoting) {
+                $expiresAt = $existingVoting['expires_at'] ?? 0;
+
+                if (time() < $expiresAt) {
+                    return response()->json([
+                        'status' => 'error',
+                        'message' => 'Voting is already in progress'
+                    ], 409);
+                }
+
+                // Voting has expired - clear it
+                Log::info('[VOTING] Clearing expired voting', [
+                    'session_id' => $sessionId,
+                    'old_voting_id' => $existingVoting['voting_id'] ?? 'unknown',
+                ]);
+                Cache::forget($cacheKey);
+            }
+
+            // Get initiator info
+            $initiatorProfile = $this->authService->getUserProfile($request->bearerToken(), $userId);
+            $initiatorName = $this->getUsernameFromProfile($initiatorProfile, $userId);
+
+            // Build member list
+            $activeMembers = $lobby->activeMembers()->get();
+            $members = $activeMembers->map(function ($member) use ($request) {
+                $userProfile = $this->authService->getUserProfile($request->bearerToken(), $member->user_id);
+                $userName = $this->getUsernameFromProfile($userProfile, $member->user_id);
+                return [
+                    'user_id' => $member->user_id,
+                    'user_name' => $userName,
+                ];
+            })->toArray();
+
+            // Create voting record in cache
+            $votingId = Str::uuid()->toString();
+            $votingData = [
+                'voting_id' => $votingId,
+                'session_id' => $sessionId,
+                'initiator_id' => $userId,
+                'started_at' => time(),
+                'expires_at' => time() + $timeoutSeconds,
+                'timeout_seconds' => $timeoutSeconds,
+                'votes' => [], // userId => 'accept' or 'customize'
+                'members' => $members,
+                'exercises' => $exercises,
+                'alternative_pool' => $alternativePool,
+            ];
+
+            // Store in cache with TTL slightly longer than timeout
+            Cache::put($cacheKey, $votingData, $timeoutSeconds + 10);
+
+            // Broadcast voting started event
+            broadcast(new VotingStarted(
+                $sessionId,
+                $votingId,
+                $userId,
+                $initiatorName,
+                $members,
+                $exercises,
+                $alternativePool,
+                $timeoutSeconds
+            ));
+
+            // Add system message
+            $lobby->addSystemMessage("Voting started! Choose to accept or customize the workout ({$timeoutSeconds}s)");
+
+            Log::info('[VOTING] Started', [
+                'session_id' => $sessionId,
+                'voting_id' => $votingId,
+                'initiator_id' => $userId,
+                'member_count' => count($members),
+                'exercise_count' => count($exercises),
+                'timeout_seconds' => $timeoutSeconds,
+            ]);
+
+            return response()->json([
+                'status' => 'success',
+                'message' => 'Voting started',
+                'data' => [
+                    'voting_id' => $votingId,
+                    'expires_at' => time() + $timeoutSeconds,
+                ]
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('[VOTING] Failed to start', [
+                'error' => $e->getMessage(),
+                'session_id' => $sessionId,
+                'user_id' => $userId,
+            ]);
+
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Failed to start voting'
+            ], 500);
+        }
+    }
+
+    /**
+     * POST /api/v2/lobby/{sessionId}/voting/submit
+     *
+     * Submit a vote (accept or customize).
+     * When all members have voted or timeout occurs, voting completes.
+     */
+    public function submitVote(Request $request, string $sessionId): JsonResponse
+    {
+        $validator = Validator::make($request->all(), [
+            'vote' => 'required|in:accept,customize',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Validation failed',
+                'errors' => $validator->errors()
+            ], 422);
+        }
+
+        $userId = (int) $request->attributes->get('user_id');
+        $vote = $request->input('vote');
+
+        try {
+            $lobby = WorkoutLobby::where('session_id', $sessionId)->first();
+
+            if (!$lobby) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Lobby not found'
+                ], 404);
+            }
+
+            // VALIDATION 1: User must be in lobby
+            if (!$lobby->hasMember($userId)) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'You are not in this lobby'
+                ], 403);
+            }
+
+            // VALIDATION 2: Check if voting is active
+            $cacheKey = "voting:{$sessionId}";
+            $votingData = Cache::get($cacheKey);
+
+            if (!$votingData) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'No active voting found'
+                ], 404);
+            }
+
+            // VALIDATION 3: Check if voting has expired
+            if (time() > $votingData['expires_at']) {
+                // Complete voting with timeout
+                $this->completeVotingWithTimeout($sessionId, $votingData, $lobby);
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Voting has expired'
+                ], 410);
+            }
+
+            // VALIDATION 4: Check if user already voted
+            if (isset($votingData['votes'][$userId])) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'You have already voted'
+                ], 409);
+            }
+
+            // Get user info
+            $userProfile = $this->authService->getUserProfile($request->bearerToken(), $userId);
+            $userName = $this->getUsernameFromProfile($userProfile, $userId);
+
+            // Record vote
+            $votingData['votes'][$userId] = $vote;
+            Cache::put($cacheKey, $votingData, $votingData['expires_at'] - time() + 10);
+
+            // Calculate current vote counts
+            $acceptCount = count(array_filter($votingData['votes'], fn($v) => $v === 'accept'));
+            $customizeCount = count(array_filter($votingData['votes'], fn($v) => $v === 'customize'));
+
+            // Build current votes for broadcast
+            $currentVotes = [];
+            foreach ($votingData['votes'] as $odId => $v) {
+                $memberInfo = collect($votingData['members'])->firstWhere('user_id', $odId);
+                $currentVotes[$odId] = [
+                    'vote' => $v,
+                    'user_name' => $memberInfo['user_name'] ?? 'Unknown',
+                ];
+            }
+
+            // Broadcast vote submitted event
+            broadcast(new VoteSubmitted(
+                $sessionId,
+                $votingData['voting_id'],
+                $userId,
+                $userName,
+                $vote,
+                $currentVotes
+            ));
+
+            Log::info('[VOTING] Vote submitted', [
+                'session_id' => $sessionId,
+                'voting_id' => $votingData['voting_id'],
+                'user_id' => $userId,
+                'vote' => $vote,
+                'accept_count' => $acceptCount,
+                'customize_count' => $customizeCount,
+            ]);
+
+            // Check if all members have voted
+            $totalMembers = count($votingData['members']);
+            $totalVotes = count($votingData['votes']);
+
+            if ($totalVotes === $totalMembers) {
+                // All voted - complete voting
+                return $this->completeVotingNow($sessionId, $votingData, $lobby, 'all_voted');
+            }
+
+            return response()->json([
+                'status' => 'success',
+                'message' => 'Vote recorded',
+                'data' => [
+                    'accept_count' => $acceptCount,
+                    'customize_count' => $customizeCount,
+                    'total_votes' => $totalVotes,
+                    'total_members' => $totalMembers,
+                ]
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error('[VOTING] Failed to submit vote', [
+                'error' => $e->getMessage(),
+                'session_id' => $sessionId,
+                'user_id' => $userId,
+            ]);
+
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Failed to submit vote'
+            ], 500);
+        }
+    }
+
+    /**
+     * POST /api/v2/lobby/{sessionId}/voting/complete
+     *
+     * Force complete voting (called by client on timeout).
+     * Non-voters default to 'accept'.
+     */
+    public function forceCompleteVoting(Request $request, string $sessionId): JsonResponse
+    {
+        $userId = (int) $request->attributes->get('user_id');
+
+        try {
+            $lobby = WorkoutLobby::where('session_id', $sessionId)->first();
+
+            if (!$lobby) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Lobby not found'
+                ], 404);
+            }
+
+            // VALIDATION: User must be in lobby
+            if (!$lobby->hasMember($userId)) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'You are not in this lobby'
+                ], 403);
+            }
+
+            $cacheKey = "voting:{$sessionId}";
+            $votingData = Cache::get($cacheKey);
+
+            if (!$votingData) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'No active voting found'
+                ], 404);
+            }
+
+            // Complete voting with timeout reason
+            return $this->completeVotingNow($sessionId, $votingData, $lobby, 'timeout');
+
+        } catch (\Exception $e) {
+            Log::error('[VOTING] Failed to force complete', [
+                'error' => $e->getMessage(),
+                'session_id' => $sessionId,
+                'user_id' => $userId,
+            ]);
+
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Failed to complete voting'
+            ], 500);
+        }
+    }
+
+    /**
+     * Helper: Complete voting and broadcast result
+     */
+    private function completeVotingNow(
+        string $sessionId,
+        array $votingData,
+        WorkoutLobby $lobby,
+        string $reason
+    ): JsonResponse {
+        $cacheKey = "voting:{$sessionId}";
+
+        // Fill in default votes for non-voters (default to 'accept')
+        $finalVotes = [];
+        foreach ($votingData['members'] as $member) {
+            $odId = $member['user_id'];
+            $finalVotes[$odId] = [
+                'vote' => $votingData['votes'][$odId] ?? 'accept',
+                'user_name' => $member['user_name'],
+            ];
+        }
+
+        // Count final votes
+        $acceptCount = count(array_filter($finalVotes, fn($v) => $v['vote'] === 'accept'));
+        $customizeCount = count(array_filter($finalVotes, fn($v) => $v['vote'] === 'customize'));
+
+        // Determine result (majority wins, accept wins on tie)
+        $result = $acceptCount >= $customizeCount ? 'accept_recommended' : 'customize';
+
+        // For now, final exercises are the recommended ones
+        // In future, if 'customize' wins, per-exercise voting would happen
+        $finalExercises = $votingData['exercises'];
+
+        // Clear cache
+        Cache::forget($cacheKey);
+
+        // Broadcast voting complete
+        broadcast(new VotingComplete(
+            $sessionId,
+            $votingData['voting_id'],
+            $result,
+            $reason,
+            $finalVotes,
+            $acceptCount,
+            $customizeCount,
+            $finalExercises
+        ));
+
+        // Add system message
+        $resultText = $result === 'accept_recommended'
+            ? "Voting complete! Using recommended workout."
+            : "Voting complete! Group wants to customize.";
+        $lobby->addSystemMessage($resultText);
+
+        Log::info('[VOTING] Completed', [
+            'session_id' => $sessionId,
+            'voting_id' => $votingData['voting_id'],
+            'result' => $result,
+            'reason' => $reason,
+            'accept_count' => $acceptCount,
+            'customize_count' => $customizeCount,
+        ]);
+
+        return response()->json([
+            'status' => 'success',
+            'message' => 'Voting completed',
+            'data' => [
+                'result' => $result,
+                'reason' => $reason,
+                'accept_count' => $acceptCount,
+                'customize_count' => $customizeCount,
+                'final_exercises' => $finalExercises,
+            ]
+        ]);
+    }
+
+    /**
+     * Helper: Complete voting due to timeout (called internally)
+     */
+    private function completeVotingWithTimeout(
+        string $sessionId,
+        array $votingData,
+        WorkoutLobby $lobby
+    ): void {
+        $this->completeVotingNow($sessionId, $votingData, $lobby, 'timeout');
     }
 }

@@ -258,6 +258,19 @@ Route::prefix('v2')->middleware([ValidateApiToken::class, 'throttle:api'])->grou
     Route::post('lobby/{sessionId}/ready-check/cancel', [LobbyController::class, 'cancelReadyCheck']);
 
     // ============================================================================
+    // VOTING (V2)
+    // ============================================================================
+
+    // Start voting - After exercises generated, auto-triggered or manual
+    Route::post('lobby/{sessionId}/voting/start', [LobbyController::class, 'startVoting']);
+
+    // Submit vote - Any lobby member (accept or customize)
+    Route::post('lobby/{sessionId}/voting/submit', [LobbyController::class, 'submitVote']);
+
+    // Force complete voting - Called on timeout
+    Route::post('lobby/{sessionId}/voting/complete', [LobbyController::class, 'forceCompleteVoting']);
+
+    // ============================================================================
     // AGORA VIDEO CONFERENCING (V2)
     // ============================================================================
 
