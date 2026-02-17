@@ -26,6 +26,7 @@ use App\Events\VoteSubmitted;
 use App\Events\VotingComplete;
 use App\Events\ExerciseSwapped;
 use App\Events\ExercisesReordered;
+use App\Events\WorkoutResumed;
 use App\Services\AuthService;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Http\Request;
@@ -475,6 +476,41 @@ class LobbyController extends Controller
                         $this->buildLobbyState($lobby, $request->bearerToken()),
                         1
                     ));
+
+                    // CRITICAL: Also transfer WorkoutSession initiator so the new leader
+                    // can pause/resume/stop the workout on the backend
+                    $session = WorkoutSession::where('session_id', $sessionId)
+                        ->whereNotIn('status', ['completed', 'stopped'])
+                        ->first();
+
+                    if ($session) {
+                        $session->update(['initiator_id' => $nextMember->user_id]);
+
+                        Log::info('[LEAVE LOBBY] WorkoutSession initiator transferred', [
+                            'session_id' => $sessionId,
+                            'old_initiator' => $userId,
+                            'new_initiator' => $nextMember->user_id,
+                        ]);
+
+                        // CRITICAL: If workout was paused by the leaving initiator,
+                        // auto-resume so remaining members aren't stuck in a paused state
+                        if ($session->status === 'paused') {
+                            $session->resume();
+
+                            broadcast(new WorkoutResumed(
+                                $sessionId,
+                                (int) $nextMember->user_id,
+                                $nextMemberName,
+                                time(),
+                                $session->getCurrentState()
+                            ));
+
+                            Log::info('[LEAVE LOBBY] Auto-resumed paused workout after initiator left', [
+                                'session_id' => $sessionId,
+                                'new_initiator' => $nextMember->user_id,
+                            ]);
+                        }
+                    }
                 }
             }
 
