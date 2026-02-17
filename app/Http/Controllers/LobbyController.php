@@ -25,6 +25,7 @@ use App\Events\VotingStarted;
 use App\Events\VoteSubmitted;
 use App\Events\VotingComplete;
 use App\Events\ExerciseSwapped;
+use App\Events\ExercisesReordered;
 use App\Services\AuthService;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Http\Request;
@@ -3153,6 +3154,139 @@ class LobbyController extends Controller
             return response()->json([
                 'status' => 'error',
                 'message' => 'Failed to swap exercise'
+            ], 500);
+        }
+    }
+
+    /**
+     * Reorder exercises in the workout during group customization
+     *
+     * POST /api/v2/lobby/{sessionId}/exercises/reorder
+     *
+     * Only the designated customizer can reorder exercises.
+     * Accepts an array of current indices in the desired new order.
+     * Example: [2, 0, 3, 1] means "move exercise at index 2 to position 0, etc."
+     */
+    public function reorderExercises(Request $request, string $sessionId): JsonResponse
+    {
+        $validator = Validator::make($request->all(), [
+            'new_order' => 'required|array|min:2',
+            'new_order.*' => 'required|integer|min:0',
+        ]);
+
+        if ($validator->fails()) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Validation failed',
+                'errors' => $validator->errors()
+            ], 422);
+        }
+
+        $userId = (int) $request->attributes->get('user_id');
+        $newOrder = $request->input('new_order');
+
+        try {
+            $lobby = WorkoutLobby::where('session_id', $sessionId)->first();
+
+            if (!$lobby) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Lobby not found'
+                ], 404);
+            }
+
+            // VALIDATION 1: User must be the designated customizer
+            $workoutData = $lobby->workout_data;
+            $customizerId = $workoutData['customizer_id'] ?? $lobby->initiator_id;
+            if ($customizerId !== $userId) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Only the designated customizer can reorder exercises'
+                ], 403);
+            }
+
+            // VALIDATION 2: Lobby must have exercises
+            if (!isset($workoutData['exercises']) || empty($workoutData['exercises'])) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'No exercises to reorder'
+                ], 400);
+            }
+
+            $exercises = $workoutData['exercises'];
+            $exerciseCount = count($exercises);
+
+            // VALIDATION 3: new_order must have the same number of elements as exercises
+            if (count($newOrder) !== $exerciseCount) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'new_order length must match exercise count'
+                ], 400);
+            }
+
+            // VALIDATION 4: new_order must be a valid permutation of [0..n-1]
+            $sorted = $newOrder;
+            sort($sorted);
+            $expected = range(0, $exerciseCount - 1);
+            if ($sorted !== $expected) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'new_order must be a valid permutation of exercise indices'
+                ], 400);
+            }
+
+            // Reorder exercises
+            $reorderedExercises = [];
+            foreach ($newOrder as $oldIndex) {
+                $reorderedExercises[] = $exercises[$oldIndex];
+            }
+
+            // Update workout_data
+            $workoutData['exercises'] = $reorderedExercises;
+            $lobby->update(['workout_data' => $workoutData]);
+
+            // Get user info for broadcast
+            $userProfile = $this->authService->getUserProfile($request->bearerToken(), $userId);
+            $userName = $this->getUsernameFromProfile($userProfile, $userId);
+
+            // Broadcast reorder event
+            broadcast(new ExercisesReordered(
+                $sessionId,
+                $reorderedExercises,
+                $userId,
+                $userName
+            ));
+
+            // Also broadcast LobbyStateChanged for full state sync
+            broadcast(new LobbyStateChanged(
+                $sessionId,
+                $this->buildLobbyState($lobby, $request->bearerToken())
+            ));
+
+            Log::info("Exercises reordered in lobby", [
+                'session_id' => $sessionId,
+                'new_order' => $newOrder,
+                'reordered_by' => $userId,
+            ]);
+
+            return response()->json([
+                'status' => 'success',
+                'message' => 'Exercises reordered successfully',
+                'data' => [
+                    'updated_exercises' => $reorderedExercises,
+                ]
+            ]);
+
+        } catch (\Exception $e) {
+            Log::error("Failed to reorder exercises", [
+                'session_id' => $sessionId,
+                'user_id' => $userId,
+                'error' => $e->getMessage(),
+            ]);
+
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Failed to reorder exercises'
             ], 500);
         }
     }

@@ -274,8 +274,11 @@ Route::prefix('v2')->middleware([ValidateApiToken::class, 'throttle:api'])->grou
     // EXERCISE CUSTOMIZATION (V2)
     // ============================================================================
 
-    // Swap exercise - Initiator only, after voting "customize"
+    // Swap exercise - Customizer only, after voting "customize"
     Route::post('lobby/{sessionId}/exercises/swap', [LobbyController::class, 'swapExercise']);
+
+    // Reorder exercises - Customizer only, after voting "customize"
+    Route::post('lobby/{sessionId}/exercises/reorder', [LobbyController::class, 'reorderExercises']);
 
     // ============================================================================
     // AGORA VIDEO CONFERENCING (V2)
