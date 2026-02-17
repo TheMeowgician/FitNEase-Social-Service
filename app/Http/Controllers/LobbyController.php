@@ -1763,6 +1763,7 @@ class LobbyController extends Controller
                 'joined_at' => $member->joined_at->timestamp,
                 'fitness_level' => $fitnessLevel,
                 'user_role' => $userRole,
+                'profile_picture' => $userProfile['profile_picture'] ?? null,
             ];
         });
 
