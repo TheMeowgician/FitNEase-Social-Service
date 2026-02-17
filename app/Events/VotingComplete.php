@@ -34,6 +34,7 @@ class VotingComplete implements ShouldBroadcastNow
     public int $acceptCount;
     public int $customizeCount;
     public array $finalExercises; // The exercises to use for the workout
+    public ?int $customizerId; // The user_id of the designated customizer (null if accept_recommended)
     public int $completedAt;
 
     public function __construct(
@@ -44,7 +45,8 @@ class VotingComplete implements ShouldBroadcastNow
         array $finalVotes,
         int $acceptCount,
         int $customizeCount,
-        array $finalExercises = []
+        array $finalExercises = [],
+        ?int $customizerId = null
     ) {
         $this->sessionId = $sessionId;
         $this->votingId = $votingId;
@@ -54,6 +56,7 @@ class VotingComplete implements ShouldBroadcastNow
         $this->acceptCount = $acceptCount;
         $this->customizeCount = $customizeCount;
         $this->finalExercises = $finalExercises;
+        $this->customizerId = $customizerId;
         $this->completedAt = time();
     }
 
@@ -78,6 +81,7 @@ class VotingComplete implements ShouldBroadcastNow
             'accept_count' => $this->acceptCount,
             'customize_count' => $this->customizeCount,
             'final_exercises' => $this->finalExercises,
+            'customizer_id' => $this->customizerId,
             'completed_at' => $this->completedAt,
         ];
     }

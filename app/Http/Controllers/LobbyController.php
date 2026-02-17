@@ -477,6 +477,36 @@ class LobbyController extends Controller
                 }
             }
 
+            // If the leaving user was the customizer, re-determine customizer
+            $lobby->refresh(); // Ensure we have latest workout_data (may have been updated by initiator transfer)
+            $workoutData = $lobby->workout_data ?? [];
+            if (isset($workoutData['customizer_id']) && $workoutData['customizer_id'] === $userId) {
+                $lobbyState = $this->buildLobbyState($lobby, $request->bearerToken());
+                $membersArray = $lobbyState['members'] instanceof \Illuminate\Support\Collection
+                    ? $lobbyState['members']->toArray()
+                    : (array) $lobbyState['members'];
+
+                if (!empty($membersArray)) {
+                    $newCustomizerId = $this->determineCustomizer($lobby, $membersArray);
+                    $workoutData['customizer_id'] = $newCustomizerId;
+                    $lobby->update(['workout_data' => $workoutData]);
+
+                    $newCustomizerMember = collect($membersArray)->firstWhere('user_id', $newCustomizerId);
+                    $newCustomizerName = $newCustomizerMember['user_name'] ?? "User #{$newCustomizerId}";
+                    $lobby->addSystemMessage("{$newCustomizerName} is now the workout customizer");
+
+                    Log::info('[CUSTOMIZER] Re-assigned after member left', [
+                        'session_id' => $sessionId,
+                        'left_user_id' => $userId,
+                        'new_customizer_id' => $newCustomizerId,
+                    ]);
+                } else {
+                    // No members left, clear customizer
+                    unset($workoutData['customizer_id']);
+                    $lobby->update(['workout_data' => $workoutData]);
+                }
+            }
+
             // CRITICAL: Auto-complete lobby if no members left
             $lobby->autoCompleteIfEmpty();
 
@@ -1467,6 +1497,36 @@ class LobbyController extends Controller
             // Add system message
             $lobby->addSystemMessage("{$kickedUserName} was removed from the lobby");
 
+            // If the kicked user was the customizer, re-determine customizer
+            $workoutData = $lobby->workout_data ?? [];
+            if (isset($workoutData['customizer_id']) && $workoutData['customizer_id'] === $kickedUserId) {
+                $lobby->refresh();
+                $lobby->unsetRelation('members');
+                $lobbyState = $this->buildLobbyState($lobby, $request->bearerToken());
+                $membersArray = $lobbyState['members'] instanceof \Illuminate\Support\Collection
+                    ? $lobbyState['members']->toArray()
+                    : (array) $lobbyState['members'];
+
+                if (!empty($membersArray)) {
+                    $newCustomizerId = $this->determineCustomizer($lobby, $membersArray);
+                    $workoutData['customizer_id'] = $newCustomizerId;
+                    $lobby->update(['workout_data' => $workoutData]);
+
+                    $newCustomizerMember = collect($membersArray)->firstWhere('user_id', $newCustomizerId);
+                    $newCustomizerName = $newCustomizerMember['user_name'] ?? "User #{$newCustomizerId}";
+                    $lobby->addSystemMessage("{$newCustomizerName} is now the workout customizer");
+
+                    Log::info('[CUSTOMIZER] Re-assigned after member kicked', [
+                        'session_id' => $sessionId,
+                        'kicked_user_id' => $kickedUserId,
+                        'new_customizer_id' => $newCustomizerId,
+                    ]);
+                } else {
+                    unset($workoutData['customizer_id']);
+                    $lobby->update(['workout_data' => $workoutData]);
+                }
+            }
+
             DB::commit();
 
             // CRITICAL: Refresh lobby to get latest member data after commit
@@ -1771,6 +1831,7 @@ class LobbyController extends Controller
             'session_id' => $lobby->session_id,
             'group_id' => $lobby->group_id,
             'initiator_id' => $lobby->initiator_id,
+            'customizer_id' => $lobby->workout_data['customizer_id'] ?? null,
             'status' => $lobby->status,
             'workout_data' => $lobby->workout_data,
             'members' => $members,
@@ -2820,6 +2881,27 @@ class LobbyController extends Controller
         // In future, if 'customize' wins, per-exercise voting would happen
         $finalExercises = $votingData['exercises'];
 
+        // If customize wins, determine who should be the customizer
+        $customizerId = null;
+        if ($result === 'customize') {
+            $customizerId = $this->determineCustomizer($lobby, $votingData['members']);
+
+            // Store customizer_id in workout_data
+            $workoutData = $lobby->workout_data ?? [];
+            $workoutData['customizer_id'] = $customizerId;
+            $lobby->update(['workout_data' => $workoutData]);
+
+            // Get customizer name for system message
+            $customizerMember = collect($votingData['members'])->firstWhere('user_id', $customizerId);
+            $customizerName = $customizerMember['user_name'] ?? "User #{$customizerId}";
+
+            Log::info('[CUSTOMIZER] Assigned customizer for session', [
+                'session_id' => $sessionId,
+                'customizer_id' => $customizerId,
+                'customizer_name' => $customizerName,
+            ]);
+        }
+
         // Clear cache
         Cache::forget($cacheKey);
 
@@ -2832,14 +2914,18 @@ class LobbyController extends Controller
             $finalVotes,
             $acceptCount,
             $customizeCount,
-            $finalExercises
+            $finalExercises,
+            $customizerId
         ));
 
         // Add system message
-        $resultText = $result === 'accept_recommended'
-            ? "Voting complete! Using recommended workout."
-            : "Voting complete! Group wants to customize.";
-        $lobby->addSystemMessage($resultText);
+        if ($result === 'accept_recommended') {
+            $lobby->addSystemMessage("Voting complete! Using recommended workout.");
+        } else {
+            $customizerMember = $customizerMember ?? collect($votingData['members'])->firstWhere('user_id', $customizerId);
+            $customizerName = $customizerMember['user_name'] ?? "User #{$customizerId}";
+            $lobby->addSystemMessage("Voting complete! {$customizerName} will customize the workout.");
+        }
 
         Log::info('[VOTING] Completed', [
             'session_id' => $sessionId,
@@ -2848,6 +2934,7 @@ class LobbyController extends Controller
             'reason' => $reason,
             'accept_count' => $acceptCount,
             'customize_count' => $customizeCount,
+            'customizer_id' => $customizerId,
         ]);
 
         return response()->json([
@@ -2859,6 +2946,7 @@ class LobbyController extends Controller
                 'accept_count' => $acceptCount,
                 'customize_count' => $customizeCount,
                 'final_exercises' => $finalExercises,
+                'customizer_id' => $customizerId,
             ]
         ]);
     }
@@ -2875,12 +2963,78 @@ class LobbyController extends Controller
     }
 
     /**
+     * Determine who should customize exercises based on priority:
+     * 1. Mentor who is the initiator
+     * 2. First mentor by join order (earliest joined_at)
+     * 3. Advanced user who is the initiator
+     * 4. First advanced user by join order (earliest joined_at)
+     * 5. Initiator (fallback)
+     *
+     * @param WorkoutLobby $lobby The lobby instance
+     * @param array $members Array of member data with user_id, user_role, fitness_level, joined_at
+     * @return int The user_id of the determined customizer
+     */
+    private function determineCustomizer(WorkoutLobby $lobby, array $members): int
+    {
+        $initiatorId = $lobby->initiator_id;
+        $mentors = [];
+        $advancedUsers = [];
+
+        foreach ($members as $member) {
+            $userId = $member['user_id'];
+            $userRole = $member['user_role'] ?? 'member';
+            $fitnessLevel = $member['fitness_level'] ?? 'beginner';
+
+            if ($userRole === 'mentor') {
+                $mentors[] = $member;
+            }
+            if ($fitnessLevel === 'advanced') {
+                $advancedUsers[] = $member;
+            }
+        }
+
+        // Priority 1: Mentor who is the initiator
+        foreach ($mentors as $m) {
+            if ($m['user_id'] === $initiatorId) {
+                Log::info('[CUSTOMIZER] Selected mentor-initiator', ['user_id' => $m['user_id']]);
+                return $m['user_id'];
+            }
+        }
+
+        // Priority 2: First mentor by join order
+        if (!empty($mentors)) {
+            usort($mentors, fn($a, $b) => ($a['joined_at'] ?? 0) - ($b['joined_at'] ?? 0));
+            Log::info('[CUSTOMIZER] Selected first mentor by join order', ['user_id' => $mentors[0]['user_id']]);
+            return $mentors[0]['user_id'];
+        }
+
+        // Priority 3: Advanced user who is the initiator
+        foreach ($advancedUsers as $a) {
+            if ($a['user_id'] === $initiatorId) {
+                Log::info('[CUSTOMIZER] Selected advanced-initiator', ['user_id' => $a['user_id']]);
+                return $a['user_id'];
+            }
+        }
+
+        // Priority 4: First advanced user by join order
+        if (!empty($advancedUsers)) {
+            usort($advancedUsers, fn($a, $b) => ($a['joined_at'] ?? 0) - ($b['joined_at'] ?? 0));
+            Log::info('[CUSTOMIZER] Selected first advanced user by join order', ['user_id' => $advancedUsers[0]['user_id']]);
+            return $advancedUsers[0]['user_id'];
+        }
+
+        // Priority 5: Initiator fallback
+        Log::info('[CUSTOMIZER] Fallback to initiator', ['user_id' => $initiatorId]);
+        return $initiatorId;
+    }
+
+    /**
      * Swap an exercise in the workout during group customization
      *
      * POST /api/v2/lobby/{sessionId}/exercises/swap
      *
      * This endpoint is only available after the group has voted "customize".
-     * Only the initiator/mentor can swap exercises.
+     * Only the designated customizer (determined by priority: mentor > advanced > initiator) can swap exercises.
      * The swap is broadcast to all members in real-time.
      */
     public function swapExercise(Request $request, string $sessionId): JsonResponse
@@ -2914,16 +3068,17 @@ class LobbyController extends Controller
                 ], 404);
             }
 
-            // VALIDATION 1: User must be the initiator (mentor control)
-            if ($lobby->initiator_id !== $userId) {
+            // VALIDATION 1: User must be the designated customizer (or initiator as fallback)
+            $workoutData = $lobby->workout_data;
+            $customizerId = $workoutData['customizer_id'] ?? $lobby->initiator_id;
+            if ($customizerId !== $userId) {
                 return response()->json([
                     'status' => 'error',
-                    'message' => 'Only the lobby initiator can swap exercises'
+                    'message' => 'Only the designated customizer can swap exercises'
                 ], 403);
             }
 
             // VALIDATION 2: Lobby must have exercises
-            $workoutData = $lobby->workout_data;
             if (!isset($workoutData['exercises']) || empty($workoutData['exercises'])) {
                 return response()->json([
                     'status' => 'error',
@@ -2966,7 +3121,7 @@ class LobbyController extends Controller
             // Also broadcast LobbyStateChanged for full state sync
             broadcast(new LobbyStateChanged(
                 $sessionId,
-                $lobby->buildLobbyState()
+                $this->buildLobbyState($lobby, $request->bearerToken())
             ));
 
             Log::info("Exercise swapped in lobby", [
