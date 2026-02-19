@@ -2,6 +2,7 @@
 
 namespace App\Http\Controllers;
 
+use App\Events\GroupMemberUpdated;
 use App\Models\Group;
 use App\Models\GroupMember;
 use App\Models\GroupJoinRequest;
@@ -627,20 +628,92 @@ class JoinRequestController extends Controller
     }
 
     /**
-     * Broadcast group member update (copied from GroupMemberController)
+     * Broadcast group member update via WebSocket so all group members see the
+     * updated member list in real-time (e.g. after a join request is approved).
      */
     private function broadcastGroupMemberUpdate(int $groupId, ?string $token): void
     {
         try {
-            $groupMemberController = app(GroupMemberController::class);
-            // Call the broadcast method via reflection or make it public
-            // For now, just log - the group details page will refresh on navigation
-            Log::info('Member update broadcast triggered', ['group_id' => $groupId]);
+            $memberCount = GroupMember::where('group_id', $groupId)
+                ->where('is_active', true)
+                ->count();
+
+            $groupMembers = GroupMember::where('group_id', $groupId)
+                ->where('is_active', true)
+                ->orderBy('joined_at', 'desc')
+                ->get();
+
+            $userIds = $groupMembers->pluck('user_id')->toArray();
+            $usernamesMap = $this->batchFetchUsernames($userIds, $token);
+
+            $members = $groupMembers->map(function ($member) use ($usernamesMap) {
+                $userData = $usernamesMap[$member->user_id] ?? null;
+                return [
+                    'id'       => $member->group_member_id,
+                    'userId'   => (string) $member->user_id,
+                    'username' => is_array($userData)
+                        ? ($userData['username'] ?? 'User ' . $member->user_id)
+                        : ($userData ?? 'User ' . $member->user_id),
+                    'role'     => $member->member_role,
+                    'userRole' => is_array($userData) ? ($userData['user_role'] ?? 'member') : 'member',
+                    'joinedAt' => $member->joined_at ? $member->joined_at->toISOString() : null,
+                ];
+            })->toArray();
+
+            broadcast(new GroupMemberUpdated($groupId, $memberCount, $members));
+
+            Log::info('Group member update broadcasted after join request action', [
+                'group_id'   => $groupId,
+                'member_count' => $memberCount,
+            ]);
         } catch (\Exception $e) {
-            Log::warning('Failed to broadcast member update', [
+            Log::error('Failed to broadcast group member update', [
                 'group_id' => $groupId,
-                'error' => $e->getMessage()
+                'error'    => $e->getMessage(),
             ]);
         }
+    }
+
+    /**
+     * Batch-fetch usernames + user_role from the auth service for a list of user IDs.
+     * Returns array keyed by user_id.
+     */
+    private function batchFetchUsernames(array $userIds, ?string $token): array
+    {
+        if (empty($userIds)) {
+            return [];
+        }
+
+        try {
+            $client = new Client();
+            $response = $client->post(env('AUTH_SERVICE_URL') . '/api/batch-user-profiles', [
+                'json'    => ['user_ids' => $userIds],
+                'timeout' => 5,
+                'headers' => ['Accept' => 'application/json'],
+            ]);
+
+            if ($response->getStatusCode() === 200) {
+                $data     = json_decode($response->getBody(), true);
+                $profiles = $data['data'] ?? [];
+                $map      = [];
+                foreach ($profiles as $profile) {
+                    $uid = $profile['id'] ?? $profile['user_id'] ?? null;
+                    if ($uid) {
+                        $map[$uid] = [
+                            'username'  => $profile['username'] ?? 'User ' . $uid,
+                            'user_role' => $profile['user_role'] ?? 'member',
+                        ];
+                    }
+                }
+                return $map;
+            }
+        } catch (\Exception $e) {
+            Log::warning('batchFetchUsernames failed in JoinRequestController', [
+                'error' => $e->getMessage(),
+            ]);
+        }
+
+        // Fall back to generic names — broadcast still goes out
+        return [];
     }
 }
