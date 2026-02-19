@@ -48,14 +48,16 @@ class RateLimitServiceProvider extends ServiceProvider
                 });
         });
 
-        // Invitation rate limit: 20 invitations per hour per user
+        // Invitation rate limit: 100 invitations per hour per user
+        // Increased from 20 — research groups can have up to 24 members (23 invites
+        // needed per session), and repeated test runs burn the quota quickly.
         RateLimiter::for('invitations', function (Request $request) {
             $userId = $request->attributes->get('user_id') ?? $request->ip();
-            return Limit::perHour(20)->by("invitations:{$userId}")
+            return Limit::perHour(100)->by("invitations:{$userId}")
                 ->response(function (Request $request, array $headers) {
                     return response()->json([
                         'status' => 'error',
-                        'message' => 'Too many invitations sent. You can send a maximum of 20 invitations per hour.',
+                        'message' => 'Too many invitations sent. You can send a maximum of 100 invitations per hour.',
                         'retry_after' => $headers['Retry-After'] ?? 3600,
                     ], 429);
                 });
