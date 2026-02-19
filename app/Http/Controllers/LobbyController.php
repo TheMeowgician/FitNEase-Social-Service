@@ -343,6 +343,23 @@ class LobbyController extends Controller
             // Add member (cache username for instant pause/resume)
             $lobby->addMember($userId, 'waiting', $userName);
 
+            // Cancel any active ready check: the new member was not included in the
+            // existing check's member list, so if the others accepted it would fire
+            // success without the new member's consent (race condition — Bug 1 fix).
+            // All members, including the late joiner, must participate in a fresh check.
+            $readyCacheKey = "ready_check:{$sessionId}";
+            $cancelledReadyCheck = null;
+            $activeReadyCheck = Cache::get($readyCacheKey);
+            if ($activeReadyCheck && time() < ($activeReadyCheck['expires_at'] ?? 0)) {
+                Cache::forget($readyCacheKey);
+                $cancelledReadyCheck = $activeReadyCheck;
+                Log::info('[READY CHECK] Cancelled because a new member joined', [
+                    'session_id'      => $sessionId,
+                    'joined_user_id'  => $userId,
+                    'ready_check_id'  => $activeReadyCheck['ready_check_id'],
+                ]);
+            }
+
             // Add system message
             $lobby->addSystemMessage("{$userName} joined the lobby");
 
@@ -359,6 +376,18 @@ class LobbyController extends Controller
             $member = ['user_id' => $userId, 'user_name' => $userName, 'status' => 'waiting'];
             broadcast(new MemberJoined($sessionId, $member, $this->buildLobbyState($lobby, $request->bearerToken()), 1));
             broadcast(new LobbyStateChanged($sessionId, $this->buildLobbyState($lobby, $request->bearerToken())));
+
+            // Broadcast ready check cancellation AFTER the join state change so clients
+            // dismiss the modal only after seeing the updated roster that includes the
+            // new member.
+            if ($cancelledReadyCheck) {
+                broadcast(new ReadyCheckCancelled(
+                    $sessionId,
+                    $cancelledReadyCheck['ready_check_id'],
+                    $userId,
+                    'A new member joined the lobby'
+                ));
+            }
 
             Log::info('User joined lobby', [
                 'session_id' => $sessionId,
@@ -450,6 +479,30 @@ class LobbyController extends Controller
                 'session_id' => $sessionId,
                 'user_id' => $userId,
             ]);
+
+            // Cancel any active ready check (leaving member can no longer respond —
+            // it would time out permanently, blocking the team from starting a new one).
+            // Also reset ALL remaining members to 'waiting': team composition changed,
+            // so everyone must re-confirm readiness under the new roster.
+            $readyCacheKey = "ready_check:{$sessionId}";
+            $cancelledReadyCheck = null;
+            $activeReadyCheck = Cache::get($readyCacheKey);
+            if ($activeReadyCheck && time() < ($activeReadyCheck['expires_at'] ?? 0)) {
+                Cache::forget($readyCacheKey);
+                $cancelledReadyCheck = $activeReadyCheck;
+                Log::info('[READY CHECK] Cancelled due to member leaving', [
+                    'session_id'     => $sessionId,
+                    'left_user_id'   => $userId,
+                    'ready_check_id' => $activeReadyCheck['ready_check_id'],
+                ]);
+            }
+
+            // Reset remaining active members to 'waiting'
+            // (removeMember already marked the leaving user as 'left', so activeMembers()
+            // no longer includes them — the where clause is a safety guard only)
+            $lobby->activeMembers()
+                ->where('status', 'ready')
+                ->update(['status' => 'waiting']);
 
             // Add system message
             $lobby->addSystemMessage("{$userName} left the lobby");
@@ -563,6 +616,17 @@ class LobbyController extends Controller
                 broadcast(new LobbyDeleted($sessionId, 'All members left', time()));
             } else {
                 broadcast(new LobbyStateChanged($sessionId, $this->buildLobbyState($lobby, $request->bearerToken())));
+            }
+
+            // Broadcast ready check cancellation AFTER LobbyStateChanged so clients
+            // receive the updated (all-waiting) roster before dismissing the modal.
+            if ($cancelledReadyCheck) {
+                broadcast(new ReadyCheckCancelled(
+                    $sessionId,
+                    $cancelledReadyCheck['ready_check_id'],
+                    $userId,
+                    'A member left the lobby'
+                ));
             }
 
             Log::info('User left lobby', [
