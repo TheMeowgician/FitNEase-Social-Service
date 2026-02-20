@@ -2,6 +2,7 @@
 
 namespace App\Services;
 
+use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Http;
 use Illuminate\Support\Facades\Log;
 
@@ -20,12 +21,12 @@ class AuthService
     public function getUserProfile(string $token, int $userId): ?array
     {
         try {
-            Log::info('Requesting user profile from auth service', [
-                'service' => 'fitnease-social',
-                'target_service' => 'fitnease-auth',
-                'user_id' => $userId,
-                'token_prefix' => substr($token, 0, 10) . '...'
-            ]);
+            // Check Redis cache first (5-min TTL) — avoids HTTP call to auth service
+            $cacheKey = "user_profile:{$userId}";
+            $cached = Cache::get($cacheKey);
+            if ($cached) {
+                return $cached;
+            }
 
             $response = Http::timeout(5)->withHeaders([
                 'Authorization' => 'Bearer ' . $token,
@@ -34,14 +35,7 @@ class AuthService
 
             if ($response->successful()) {
                 $userData = $response->json();
-
-                Log::info('User profile retrieved successfully', [
-                    'service' => 'fitnease-social',
-                    'target_service' => 'fitnease-auth',
-                    'user_id' => $userId,
-                    'profile_data_keys' => array_keys($userData)
-                ]);
-
+                Cache::put($cacheKey, $userData, 300); // 5 minutes
                 return $userData;
             }
 
@@ -50,7 +44,6 @@ class AuthService
                 'target_service' => 'fitnease-auth',
                 'user_id' => $userId,
                 'status_code' => $response->status(),
-                'response_body' => $response->body()
             ]);
 
             return null;

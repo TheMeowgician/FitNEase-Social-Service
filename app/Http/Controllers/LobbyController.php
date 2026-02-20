@@ -2377,10 +2377,10 @@ class LobbyController extends Controller
 
             // Use atomic lock to prevent race condition where concurrent responses
             // overwrite each other (read-modify-write on shared cache key)
-            $lock = Cache::lock("ready_check_lock:{$sessionId}", 5);
+            $lock = Cache::lock("ready_check_lock:{$sessionId}", 20);
 
             try {
-                $lock->block(3);
+                $lock->block(15); // 15s to handle 30 concurrent users (~50ms each)
             } catch (LockTimeoutException $e) {
                 return response()->json([
                     'status' => 'error',
@@ -2839,10 +2839,10 @@ class LobbyController extends Controller
 
             // Use atomic lock to prevent race condition where concurrent votes
             // overwrite each other (read-modify-write on shared cache key)
-            $lock = Cache::lock("voting_lock:{$sessionId}", 5);
+            $lock = Cache::lock("voting_lock:{$sessionId}", 20);
 
             try {
-                $lock->block(3); // Wait up to 3 seconds for lock
+                $lock->block(15); // 15s to handle 30 concurrent voters (~50ms each)
             } catch (LockTimeoutException $e) {
                 Log::warning('[VOTING] Lock timeout for vote submission', [
                     'session_id' => $sessionId,
@@ -2991,10 +2991,10 @@ class LobbyController extends Controller
             $cacheKey = "voting:{$sessionId}";
 
             // Acquire lock to ensure we read the latest votes (not a stale snapshot)
-            $lock = Cache::lock("voting_lock:{$sessionId}", 5);
+            $lock = Cache::lock("voting_lock:{$sessionId}", 20);
 
             try {
-                $lock->block(3);
+                $lock->block(15);
             } catch (LockTimeoutException $e) {
                 return response()->json([
                     'status' => 'error',
