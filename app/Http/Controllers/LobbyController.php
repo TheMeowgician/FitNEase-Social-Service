@@ -29,6 +29,7 @@ use App\Events\ExercisesReordered;
 use App\Events\WorkoutResumed;
 use App\Services\AuthService;
 use Illuminate\Support\Facades\Cache;
+use Illuminate\Cache\LockTimeoutException;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\DB;
@@ -2368,41 +2369,56 @@ class LobbyController extends Controller
                 ], 403);
             }
 
-            // VALIDATION 2: Check if ready check is active
-            $cacheKey = "ready_check:{$sessionId}";
-            $readyCheckData = Cache::get($cacheKey);
-
-            if (!$readyCheckData) {
-                return response()->json([
-                    'status' => 'error',
-                    'message' => 'No active ready check found'
-                ], 404);
-            }
-
-            // VALIDATION 3: Check if ready check has expired
-            if (time() > $readyCheckData['expires_at']) {
-                Cache::forget($cacheKey);
-                return response()->json([
-                    'status' => 'error',
-                    'message' => 'Ready check has expired'
-                ], 410);
-            }
-
-            // VALIDATION 4: Check if user already responded
-            if (isset($readyCheckData['responses'][$userId])) {
-                return response()->json([
-                    'status' => 'error',
-                    'message' => 'You have already responded to this ready check'
-                ], 409);
-            }
-
-            // Get user info
+            // Get user info BEFORE acquiring lock (slow HTTP call)
             $userProfile = $this->authService->getUserProfile($request->bearerToken(), $userId);
             $userName = $this->getUsernameFromProfile($userProfile, $userId);
 
-            // Record response
-            $readyCheckData['responses'][$userId] = $response;
-            Cache::put($cacheKey, $readyCheckData, $readyCheckData['expires_at'] - time() + 10);
+            $cacheKey = "ready_check:{$sessionId}";
+
+            // Use atomic lock to prevent race condition where concurrent responses
+            // overwrite each other (read-modify-write on shared cache key)
+            $lock = Cache::lock("ready_check_lock:{$sessionId}", 5);
+
+            try {
+                $lock->block(3);
+            } catch (LockTimeoutException $e) {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Server busy, please try again'
+                ], 503);
+            }
+
+            try {
+                $readyCheckData = Cache::get($cacheKey);
+
+                if (!$readyCheckData) {
+                    return response()->json([
+                        'status' => 'error',
+                        'message' => 'No active ready check found'
+                    ], 404);
+                }
+
+                if (time() > $readyCheckData['expires_at']) {
+                    Cache::forget($cacheKey);
+                    return response()->json([
+                        'status' => 'error',
+                        'message' => 'Ready check has expired'
+                    ], 410);
+                }
+
+                if (isset($readyCheckData['responses'][$userId])) {
+                    return response()->json([
+                        'status' => 'error',
+                        'message' => 'You have already responded to this ready check'
+                    ], 409);
+                }
+
+                // Record response atomically
+                $readyCheckData['responses'][$userId] = $response;
+                Cache::put($cacheKey, $readyCheckData, max($readyCheckData['expires_at'] - time() + 10, 1));
+            } finally {
+                $lock->release();
+            }
 
             // Broadcast response event
             broadcast(new ReadyCheckResponse(
@@ -2815,42 +2831,67 @@ class LobbyController extends Controller
                 ], 403);
             }
 
-            // VALIDATION 2: Check if voting is active
-            $cacheKey = "voting:{$sessionId}";
-            $votingData = Cache::get($cacheKey);
-
-            if (!$votingData) {
-                return response()->json([
-                    'status' => 'error',
-                    'message' => 'No active voting found'
-                ], 404);
-            }
-
-            // VALIDATION 3: Check if voting has expired
-            if (time() > $votingData['expires_at']) {
-                // Complete voting with timeout
-                $this->completeVotingWithTimeout($sessionId, $votingData, $lobby);
-                return response()->json([
-                    'status' => 'error',
-                    'message' => 'Voting has expired'
-                ], 410);
-            }
-
-            // VALIDATION 4: Check if user already voted
-            if (isset($votingData['votes'][$userId])) {
-                return response()->json([
-                    'status' => 'error',
-                    'message' => 'You have already voted'
-                ], 409);
-            }
-
-            // Get user info
+            // Get user info BEFORE acquiring lock (slow HTTP call)
             $userProfile = $this->authService->getUserProfile($request->bearerToken(), $userId);
             $userName = $this->getUsernameFromProfile($userProfile, $userId);
 
-            // Record vote
-            $votingData['votes'][$userId] = $vote;
-            Cache::put($cacheKey, $votingData, $votingData['expires_at'] - time() + 10);
+            $cacheKey = "voting:{$sessionId}";
+
+            // Use atomic lock to prevent race condition where concurrent votes
+            // overwrite each other (read-modify-write on shared cache key)
+            $lock = Cache::lock("voting_lock:{$sessionId}", 5);
+
+            try {
+                $lock->block(3); // Wait up to 3 seconds for lock
+            } catch (LockTimeoutException $e) {
+                Log::warning('[VOTING] Lock timeout for vote submission', [
+                    'session_id' => $sessionId,
+                    'user_id' => $userId,
+                ]);
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Server busy, please try again'
+                ], 503);
+            }
+
+            try {
+                // Read latest voting data under lock
+                $votingData = Cache::get($cacheKey);
+
+                if (!$votingData) {
+                    return response()->json([
+                        'status' => 'error',
+                        'message' => 'No active voting found'
+                    ], 404);
+                }
+
+                // Check if voting has expired
+                if (time() > $votingData['expires_at']) {
+                    $lock->release();
+                    $this->completeVotingWithTimeout($sessionId, $votingData, $lobby);
+                    return response()->json([
+                        'status' => 'error',
+                        'message' => 'Voting has expired'
+                    ], 410);
+                }
+
+                // Check if user already voted
+                if (isset($votingData['votes'][$userId])) {
+                    return response()->json([
+                        'status' => 'error',
+                        'message' => 'You have already voted'
+                    ], 409);
+                }
+
+                // Record vote atomically
+                $votingData['votes'][$userId] = $vote;
+                Cache::put($cacheKey, $votingData, max($votingData['expires_at'] - time() + 10, 1));
+
+            } finally {
+                $lock->release();
+            }
+
+            // Everything below runs AFTER lock is released (read-only on $votingData snapshot)
 
             // Calculate current vote counts
             $acceptCount = count(array_filter($votingData['votes'], fn($v) => $v === 'accept'));
@@ -2948,16 +2989,33 @@ class LobbyController extends Controller
             }
 
             $cacheKey = "voting:{$sessionId}";
-            $votingData = Cache::get($cacheKey);
 
-            if (!$votingData) {
+            // Acquire lock to ensure we read the latest votes (not a stale snapshot)
+            $lock = Cache::lock("voting_lock:{$sessionId}", 5);
+
+            try {
+                $lock->block(3);
+            } catch (LockTimeoutException $e) {
                 return response()->json([
                     'status' => 'error',
-                    'message' => 'No active voting found'
-                ], 404);
+                    'message' => 'Server busy, please try again'
+                ], 503);
             }
 
-            // Complete voting with timeout reason
+            try {
+                $votingData = Cache::get($cacheKey);
+
+                if (!$votingData) {
+                    return response()->json([
+                        'status' => 'error',
+                        'message' => 'No active voting found'
+                    ], 404);
+                }
+            } finally {
+                $lock->release();
+            }
+
+            // Complete voting with timeout reason (completeVotingNow deletes cache)
             return $this->completeVotingNow($sessionId, $votingData, $lobby, 'timeout');
 
         } catch (\Exception $e) {
