@@ -2720,8 +2720,12 @@ class LobbyController extends Controller
                 'alternative_pool' => $alternativePool,
             ];
 
-            // Store in cache with TTL slightly longer than timeout
-            Cache::put($cacheKey, $votingData, $timeoutSeconds + 10);
+            // Store in cache with a generous buffer beyond the timeout.
+            // The client calls forceCompleteVoting after the 60-second countdown, but
+            // React's 1-second timer granularity + network RTT can push the actual
+            // request to 60-75 seconds. A +10s buffer was too tight and caused 404s
+            // that left all devices permanently stuck at the vote sheet.
+            Cache::put($cacheKey, $votingData, $timeoutSeconds + 120);
 
             // Broadcast voting started event
             broadcast(new VotingStarted(
