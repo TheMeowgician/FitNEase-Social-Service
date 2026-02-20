@@ -1928,6 +1928,24 @@ class LobbyController extends Controller
             ];
         });
 
+        // Include active voting state so clients that missed VotingStarted can recover
+        $votingCacheKey = "voting:{$lobby->session_id}";
+        $votingData = Cache::get($votingCacheKey);
+        $activeVoting = null;
+        if ($votingData && time() < ($votingData['expires_at'] ?? 0)) {
+            $activeVoting = [
+                'voting_id'      => $votingData['voting_id'],
+                'session_id'     => $votingData['session_id'],
+                'initiator_id'   => $votingData['initiator_id'],
+                'initiator_name' => $votingData['initiator_name'] ?? '',
+                'members'        => $votingData['members'],
+                'exercises'      => $votingData['exercises'],
+                'alternative_pool' => $votingData['alternative_pool'] ?? [],
+                'timeout_seconds'  => $votingData['timeout_seconds'],
+                'expires_at'       => $votingData['expires_at'],
+            ];
+        }
+
         return [
             'session_id' => $lobby->session_id,
             'group_id' => $lobby->group_id,
@@ -1940,6 +1958,7 @@ class LobbyController extends Controller
             'created_at' => $lobby->created_at->timestamp,
             'expires_at' => $lobby->expires_at->timestamp,
             'is_expired' => $lobby->is_expired,
+            'active_voting' => $activeVoting,
         ];
     }
 
@@ -2691,6 +2710,7 @@ class LobbyController extends Controller
                 'voting_id' => $votingId,
                 'session_id' => $sessionId,
                 'initiator_id' => $userId,
+                'initiator_name' => $initiatorName,
                 'started_at' => time(),
                 'expires_at' => time() + $timeoutSeconds,
                 'timeout_seconds' => $timeoutSeconds,
