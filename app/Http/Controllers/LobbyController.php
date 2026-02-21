@@ -1853,6 +1853,23 @@ class LobbyController extends Controller
                 ], 400);
             }
 
+            // IDEMPOTENCY: If workout was already started (client retry after missed event),
+            // return success and re-broadcast so the client receives the event this time.
+            $existingSession = WorkoutSession::where('session_id', $sessionId)->first();
+            if ($existingSession) {
+                DB::rollBack();
+                Log::info('[LOBBY START] Workout already started — re-broadcasting event', [
+                    'session_id' => $sessionId,
+                    'initiator_id' => $initiatorId,
+                ]);
+                broadcast(new WorkoutStarted($sessionId, time()));
+                return response()->json([
+                    'status' => 'success',
+                    'data' => ['start_time' => $existingSession->started_at?->timestamp ?? time()],
+                    'message' => 'Workout already started'
+                ]);
+            }
+
             // Mark lobby as started
             $lobby->markAsStarted();
 
