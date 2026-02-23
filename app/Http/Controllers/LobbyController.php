@@ -2734,6 +2734,9 @@ class LobbyController extends Controller
                 return [
                     'user_id' => $member->user_id,
                     'user_name' => $userName,
+                    'user_role' => $userProfile['user_role'] ?? 'member',
+                    'fitness_level' => $userProfile['fitness_level'] ?? 'beginner',
+                    'joined_at' => $member->joined_at->timestamp,
                 ];
             })->toArray();
 
