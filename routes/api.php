@@ -71,6 +71,7 @@ Route::prefix('')->middleware([ValidateApiToken::class, 'throttle:api'])->group(
     Route::post('groups/{groupId}/initiate-workout', [GroupController::class, 'initiateGroupWorkout']);
 
     // Workout Session Control
+    Route::get('session/{sessionId}/state', [GroupController::class, 'getSessionState']);
     Route::post('session/{sessionId}/pause', [GroupController::class, 'pauseWorkout']);
     Route::post('session/{sessionId}/resume', [GroupController::class, 'resumeWorkout']);
     Route::post('session/{sessionId}/stop', [GroupController::class, 'stopWorkout']);

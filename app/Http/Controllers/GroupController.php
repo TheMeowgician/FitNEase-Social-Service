@@ -585,6 +585,27 @@ class GroupController extends Controller
     }
 
     /**
+     * Get current workout session state.
+     * Used by clients to sync after reconnecting from a network disruption.
+     */
+    public function getSessionState(Request $request, string $sessionId): JsonResponse
+    {
+        $session = WorkoutSession::where('session_id', $sessionId)->first();
+
+        if (!$session) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Workout session not found'
+            ], 404);
+        }
+
+        return response()->json([
+            'status' => 'success',
+            'data' => $session->getCurrentState(),
+        ]);
+    }
+
+    /**
      * Pause workout for all members in session
      */
     public function pauseWorkout(Request $request, string $sessionId): JsonResponse
