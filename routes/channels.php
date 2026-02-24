@@ -18,7 +18,8 @@ Broadcast::channel('user.{userId}', function ($user, $userId) {
     return (int) $user->id === (int) $userId;
 });
 
-// Group private channel - Only group members can subscribe
+// Group channel - Only group members can subscribe
+// Returns user metadata for presence channel tracking (online/offline status)
 Broadcast::channel('group.{groupId}', function ($user, $groupId) {
     Log::info('Broadcasting auth for group channel', [
         'user_id' => $user->id ?? 'null',
@@ -41,10 +42,21 @@ Broadcast::channel('group.{groupId}', function ($user, $groupId) {
         'membership_found' => $membership ? 'yes' : 'no'
     ]);
 
-    return $result;
+    if (!$result) {
+        return false;
+    }
+
+    // Return user metadata for presence channel tracking
+    return [
+        'id' => $user->id,
+        'name' => $user->username ?? $user->name ?? 'User',
+    ];
 });
 
 // Workout lobby channel - Only lobby members can subscribe
+// Returns user metadata (array) so Reverb treats this as a presence channel
+// and fires pusher:member_added / pusher:member_removed automatically
+// when WebSocket connections drop (e.g. WiFi loss).
 Broadcast::channel('lobby.{sessionId}', function ($user, $sessionId) {
     Log::info('Broadcasting auth for lobby channel', [
         'user_id' => $user->id ?? 'null',
@@ -67,7 +79,15 @@ Broadcast::channel('lobby.{sessionId}', function ($user, $sessionId) {
         'is_member' => $isMember
     ]);
 
-    return $isMember;
+    if (!$isMember) {
+        return false;
+    }
+
+    // Return user metadata for presence channel tracking
+    return [
+        'id' => $user->id,
+        'name' => $user->username ?? $user->name ?? 'User',
+    ];
 });
 
 // Workout session channel - For real-time workout control (pause/resume)
