@@ -22,84 +22,33 @@ class RateLimitServiceProvider extends ServiceProvider
      */
     public function boot(): void
     {
-        // Default API rate limit: 200 requests per minute per user
-        // Increased from 60 to prevent rate limiting on mobile app reloads
+        // ============================================================
+        // RATE LIMITERS DISABLED FOR JMETER TESTING
+        // Original values saved in: DOCUMENTATION/rate_limiter_original_values.txt
+        // ============================================================
+
         RateLimiter::for('api', function (Request $request) {
-            return Limit::perMinute(200)->by($request->attributes->get('user_id') ?? $request->ip())
-                ->response(function (Request $request, array $headers) {
-                    return response()->json([
-                        'status' => 'error',
-                        'message' => 'Too many requests. Please wait a moment and try again.',
-                        'retry_after' => $headers['Retry-After'] ?? 60,
-                    ], 429);
-                });
+            return Limit::none();
         });
 
-        // Lobby creation rate limit: 100 lobbies per hour per user (increased for development)
         RateLimiter::for('lobby_creation', function (Request $request) {
-            $userId = $request->attributes->get('user_id') ?? $request->ip();
-            return Limit::perHour(100)->by("lobby_creation:{$userId}")
-                ->response(function (Request $request, array $headers) {
-                    return response()->json([
-                        'status' => 'error',
-                        'message' => 'Too many lobby creations. You can create a maximum of 100 lobbies per hour.',
-                        'retry_after' => $headers['Retry-After'] ?? 3600,
-                    ], 429);
-                });
+            return Limit::none();
         });
 
-        // Invitation rate limit: 100 invitations per hour per user
-        // Increased from 20 — research groups can have up to 24 members (23 invites
-        // needed per session), and repeated test runs burn the quota quickly.
         RateLimiter::for('invitations', function (Request $request) {
-            $userId = $request->attributes->get('user_id') ?? $request->ip();
-            return Limit::perHour(100)->by("invitations:{$userId}")
-                ->response(function (Request $request, array $headers) {
-                    return response()->json([
-                        'status' => 'error',
-                        'message' => 'Too many invitations sent. You can send a maximum of 100 invitations per hour.',
-                        'retry_after' => $headers['Retry-After'] ?? 3600,
-                    ], 429);
-                });
+            return Limit::none();
         });
 
-        // Chat message rate limit: 30 messages per minute per user
         RateLimiter::for('chat_messages', function (Request $request) {
-            $userId = $request->attributes->get('user_id') ?? $request->ip();
-            return Limit::perMinute(30)->by("chat:{$userId}")
-                ->response(function (Request $request, array $headers) {
-                    return response()->json([
-                        'status' => 'error',
-                        'message' => 'Too many messages. Please slow down.',
-                        'retry_after' => $headers['Retry-After'] ?? 60,
-                    ], 429);
-                });
+            return Limit::none();
         });
 
-        // Status update rate limit: 20 updates per minute per user
         RateLimiter::for('status_updates', function (Request $request) {
-            $userId = $request->attributes->get('user_id') ?? $request->ip();
-            return Limit::perMinute(20)->by("status:{$userId}")
-                ->response(function (Request $request, array $headers) {
-                    return response()->json([
-                        'status' => 'error',
-                        'message' => 'Too many status updates. Please slow down.',
-                        'retry_after' => $headers['Retry-After'] ?? 60,
-                    ], 429);
-                });
+            return Limit::none();
         });
 
-        // Moderation actions rate limit: 10 kicks per hour per user
         RateLimiter::for('moderation_actions', function (Request $request) {
-            $userId = $request->attributes->get('user_id') ?? $request->ip();
-            return Limit::perHour(10)->by("moderation:{$userId}")
-                ->response(function (Request $request, array $headers) {
-                    return response()->json([
-                        'status' => 'error',
-                        'message' => 'Too many moderation actions. Please wait before trying again.',
-                        'retry_after' => $headers['Retry-After'] ?? 3600,
-                    ], 429);
-                });
+            return Limit::none();
         });
     }
 }
