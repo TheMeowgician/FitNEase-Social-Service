@@ -21,17 +21,17 @@ class AuthService
     public function getUserProfile(string $token, int $userId): ?array
     {
         try {
-            // Check Redis cache first (5-min TTL) — avoids HTTP call to auth service
+            // Check Redis cache first (1-min TTL) — avoids HTTP call to auth service
             $cacheKey = "user_profile:{$userId}";
             $cached = Cache::get($cacheKey);
             if ($cached) {
                 return $cached;
             }
 
+            // Use internal endpoint (no auth required) for reliable inter-service communication
             $response = Http::timeout(5)->withHeaders([
-                'Authorization' => 'Bearer ' . $token,
                 'Accept' => 'application/json',
-            ])->get($this->baseUrl . "/api/auth/user-profile/{$userId}");
+            ])->get($this->baseUrl . "/api/internal/user-profile/{$userId}");
 
             if ($response->successful()) {
                 $userData = $response->json();
