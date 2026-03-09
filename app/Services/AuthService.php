@@ -35,7 +35,7 @@ class AuthService
 
             if ($response->successful()) {
                 $userData = $response->json();
-                Cache::put($cacheKey, $userData, 300); // 5 minutes
+                Cache::put($cacheKey, $userData, 60); // 1 minute
                 return $userData;
             }
 
