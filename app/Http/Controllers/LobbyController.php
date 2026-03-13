@@ -1093,8 +1093,11 @@ class LobbyController extends Controller
                 ], 409);
             }
 
-            // VALIDATION 3: Check if user is already in a lobby
-            // ENHANCED: Proactively clean up any stale lobby memberships for invited user
+            // NOTE: If the invited user is already in another active lobby, we do NOT
+            // auto-remove them. The invitation is sent regardless — the user can choose
+            // to leave their current lobby and accept, or decline. The client-side
+            // InvitationQueueModal shows a "Leave & Accept" dialog, and the backend
+            // acceptInvitation() returns 409 if the user is still in another lobby.
             $existingLobby = WorkoutLobby::active()
                 ->whereHas('activeMembers', function($q) use ($invitedUserId) {
                     $q->where('user_id', $invitedUserId);
@@ -1102,87 +1105,11 @@ class LobbyController extends Controller
                 ->first();
 
             if ($existingLobby) {
-                // AUTO-CLEANUP: Remove invited user from stale lobby
-                Log::info('[INVITE] Found invited user in another lobby, cleaning up', [
+                Log::info('[INVITE] Invited user is in another active lobby — sending invitation anyway (user must leave before accepting)', [
                     'invited_user_id' => $invitedUserId,
                     'existing_session_id' => $existingLobby->session_id,
-                    'new_session_id' => $sessionId,
+                    'target_session_id' => $sessionId,
                 ]);
-
-                // Mark member as inactive
-                $existingLobby->members()->where('user_id', $invitedUserId)->update([
-                    'is_active' => false,
-                    'status' => 'left',
-                    'left_at' => now(),
-                    'left_reason' => 'Auto-cleanup: Invited to new lobby'
-                ]);
-
-                // Get invited user info for events
-                $invitedUserProfile = $this->authService->getUserProfile($request->bearerToken(), $invitedUserId);
-                $invitedUserName = $this->getUsernameFromProfile($invitedUserProfile, $invitedUserId);
-
-                // Handle initiator transfer or lobby deletion if needed
-                if ($existingLobby->isInitiator($invitedUserId)) {
-                    // Find next member to transfer initiator role
-                    $nextMember = $existingLobby->activeMembers()->where('user_id', '!=', $invitedUserId)->first();
-
-                    if ($nextMember) {
-                        // Transfer initiator role
-                        $existingLobby->transferInitiator($nextMember->user_id);
-
-                        $nextMemberProfile = $this->authService->getUserProfile($request->bearerToken(), $nextMember->user_id);
-                        $nextMemberName = $this->getUsernameFromProfile($nextMemberProfile, $nextMember->user_id);
-
-                        $lobbyState = $this->buildLobbyState($existingLobby, $request->bearerToken());
-
-                        broadcast(new InitiatorRoleTransferred(
-                            $existingLobby->session_id,
-                            $invitedUserId,
-                            $nextMember->user_id,
-                            $nextMemberName,
-                            $lobbyState,
-                            $existingLobby->version ?? 1
-                        ))->toOthers();
-
-                        Log::info('[INVITE] Transferred initiator role', [
-                            'old_initiator_id' => $invitedUserId,
-                            'new_initiator_id' => $nextMember->user_id,
-                        ]);
-                    } else {
-                        // No other members, delete the lobby
-                        $existingLobby->update(['status' => 'cancelled']);
-
-                        broadcast(new LobbyDeleted(
-                            $existingLobby->session_id,
-                            'Lobby cancelled - last member invited elsewhere',
-                            time()
-                        ))->toOthers();
-
-                        Log::info('[INVITE] Deleted empty lobby', [
-                            'session_id' => $existingLobby->session_id,
-                        ]);
-                    }
-                }
-
-                // Broadcast member left event if lobby still active
-                if ($existingLobby->status === 'waiting') {
-                    $lobbyState = $this->buildLobbyState($existingLobby, $request->bearerToken());
-
-                    broadcast(new MemberLeft(
-                        $existingLobby->session_id,
-                        $invitedUserId,
-                        $invitedUserName,
-                        $lobbyState,
-                        $existingLobby->version ?? 1
-                    ))->toOthers();
-
-                    broadcast(new LobbyStateChanged(
-                        $existingLobby->session_id,
-                        $lobbyState
-                    ))->toOthers();
-                }
-
-                Log::info('[INVITE] Cleanup completed, proceeding with invitation');
             }
 
             // VALIDATION 4: Check if user is already a member
