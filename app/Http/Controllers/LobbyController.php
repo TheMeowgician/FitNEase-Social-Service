@@ -1252,18 +1252,39 @@ class LobbyController extends Controller
                 ->first();
 
             if ($existingLobby) {
-                DB::rollBack();
-                Log::warning('User already in another lobby', [
+                // Auto-cleanup: remove user from stale lobby instead of blocking
+                Log::info('Auto-cleaning stale lobby membership on invitation accept', [
                     'invitation_id' => $invitationId,
                     'user_id' => $userId,
                     'existing_session_id' => $existingLobby->session_id,
                     'target_session_id' => $invitation->session_id,
                 ]);
-                return response()->json([
-                    'status' => 'error',
-                    'message' => 'You are already in another lobby. Please leave it first.',
-                    'data' => ['existing_session_id' => $existingLobby->session_id]
-                ], 409);
+
+                $existingLobby->removeMember($userId, 'left_for_new_lobby');
+
+                // Transfer initiator if the leaving user was the initiator
+                if ($existingLobby->initiator_id === $userId) {
+                    $remainingMembers = $existingLobby->activeMembers()->where('user_id', '!=', $userId)->get();
+                    if ($remainingMembers->isNotEmpty()) {
+                        $existingLobby->transferInitiator($remainingMembers->first()->user_id);
+                    }
+                }
+
+                // If no active members left, cancel the lobby
+                $existingLobby->refresh();
+                if ($existingLobby->activeMembers()->count() === 0) {
+                    $existingLobby->update(['status' => 'cancelled']);
+                }
+
+                // Broadcast state change to the old lobby
+                try {
+                    broadcast(new LobbyStateChanged(
+                        $existingLobby->session_id,
+                        $this->buildLobbyState($existingLobby, $request->bearerToken())
+                    ));
+                } catch (\Exception $e) {
+                    Log::warning('Failed to broadcast stale lobby cleanup', ['error' => $e->getMessage()]);
+                }
             }
 
             // Mark invitation as accepted
