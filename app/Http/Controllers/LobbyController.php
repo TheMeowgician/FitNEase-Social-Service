@@ -1101,8 +1101,9 @@ class LobbyController extends Controller
             // Heartbeat missing — check if grace period was already given
             $graceKey = "lobby:{$sessionId}:hb_grace:{$member->user_id}";
             if (!Cache::has($graceKey)) {
-                // First detection — give 10s grace period before removing
-                Cache::put($graceKey, 1, 10);
+                // First detection — set grace flag (30s TTL so it survives until next poll)
+                // The actual "grace timing" comes from the poll interval (~10s), not this TTL.
+                Cache::put($graceKey, 1, 30);
                 continue;
             }
 
