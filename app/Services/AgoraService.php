@@ -2,7 +2,7 @@
 
 namespace App\Services;
 
-use AgoraTools\RtcTokenBuilder2;
+use BoogieFromZk\AgoraToken\RtcTokenBuilder2;
 use App\Models\AgoraSession;
 use App\Models\AgoraParticipant;
 use Illuminate\Support\Str;
