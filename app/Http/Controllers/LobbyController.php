@@ -511,6 +511,56 @@ class LobbyController extends Controller
                 ->where('status', 'ready')
                 ->update(['status' => 'waiting']);
 
+            // Handle active voting session (leaving member can no longer vote)
+            $votingCacheKey = "voting:{$sessionId}";
+            $activeVoting = Cache::get($votingCacheKey);
+            if ($activeVoting && time() < ($activeVoting['expires_at'] ?? 0)) {
+                $lobby->unsetRelation('members');
+                $remainingVoteCount = $lobby->activeMembers()->count();
+
+                if ($remainingVoteCount < 2) {
+                    // Less than 2 remaining — cancel voting and clear exercises
+                    Cache::forget($votingCacheKey);
+
+                    $wd = $lobby->workout_data ?? [];
+                    $wd['exercises'] = [];
+                    $lobby->update(['workout_data' => $wd]);
+
+                    Log::info('[LEAVE LOBBY] Cancelled voting + cleared exercises (< 2 members)', [
+                        'session_id' => $sessionId,
+                        'remaining_count' => $remainingVoteCount,
+                    ]);
+                } else {
+                    // 2+ remaining — remove leaving member from voting, check completion
+                    $activeVoting['members'] = array_values(array_filter(
+                        $activeVoting['members'],
+                        fn($m) => $m['user_id'] !== $userId
+                    ));
+
+                    // Auto-accept for the leaving member if they hadn't voted
+                    if (!isset($activeVoting['votes'][$userId])) {
+                        $activeVoting['votes'][$userId] = 'accept';
+                    }
+
+                    // Check if all remaining members have voted
+                    $remainingMemberIds = array_column($activeVoting['members'], 'user_id');
+                    $allVoted = true;
+                    foreach ($remainingMemberIds as $memberId) {
+                        if (!isset($activeVoting['votes'][$memberId])) {
+                            $allVoted = false;
+                            break;
+                        }
+                    }
+
+                    if ($allVoted && count($remainingMemberIds) > 0) {
+                        Cache::put($votingCacheKey, $activeVoting, $activeVoting['expires_at'] - time());
+                        $this->completeVotingNow($sessionId, $activeVoting, $lobby, 'all_voted_after_leave');
+                    } else {
+                        Cache::put($votingCacheKey, $activeVoting, $activeVoting['expires_at'] - time());
+                    }
+                }
+            }
+
             // Add system message
             $lobby->addSystemMessage("{$userName} left the lobby");
 
@@ -1087,6 +1137,7 @@ class LobbyController extends Controller
     {
         $activeMembers = $lobby->activeMembers()->get();
         $removedAny = false;
+        $removedUserIds = [];
 
         foreach ($activeMembers as $member) {
             $hbKey = "lobby:{$sessionId}:hb:{$member->user_id}";
@@ -1117,6 +1168,7 @@ class LobbyController extends Controller
             Cache::forget($hbKey);
             Cache::forget($graceKey);
             $removedAny = true;
+            $removedUserIds[] = $member->user_id;
 
             // If removed member was initiator, transfer role to first remaining member
             if ($lobby->initiator_id === $member->user_id) {
@@ -1134,6 +1186,95 @@ class LobbyController extends Controller
 
         // Broadcast updated state so all remaining members see the change
         if ($removedAny) {
+            // Cancel any active ready check (removed member can no longer respond)
+            $readyCacheKey = "ready_check:{$sessionId}";
+            $cancelledReadyCheck = null;
+            $activeReadyCheck = Cache::get($readyCacheKey);
+            if ($activeReadyCheck && time() < ($activeReadyCheck['expires_at'] ?? 0)) {
+                Cache::forget($readyCacheKey);
+                $cancelledReadyCheck = $activeReadyCheck;
+                Log::info('[HEARTBEAT] Cancelled ready check due to stale member removal', [
+                    'session_id' => $sessionId,
+                    'ready_check_id' => $activeReadyCheck['ready_check_id'],
+                ]);
+            }
+
+            // Reset remaining active members to 'waiting' (team changed)
+            $lobby->activeMembers()
+                ->where('status', 'ready')
+                ->update(['status' => 'waiting']);
+
+            // Handle active voting session (removed members can no longer vote)
+            $votingCacheKey = "voting:{$sessionId}";
+            $activeVoting = Cache::get($votingCacheKey);
+
+            if ($activeVoting && time() < ($activeVoting['expires_at'] ?? 0)) {
+                $lobby->refresh();
+                $remainingCount = $lobby->activeMembers()->count();
+
+                if ($remainingCount < 2) {
+                    // Case B: Less than 2 remaining — cancel voting entirely and clear exercises
+                    Cache::forget($votingCacheKey);
+
+                    // Clear exercises from workout_data
+                    $workoutData = $lobby->workout_data ?? [];
+                    $workoutData['exercises'] = [];
+                    $lobby->update(['workout_data' => $workoutData]);
+
+                    $lobby->addSystemMessage('Voting cancelled — not enough members remaining.');
+
+                    Log::info('[HEARTBEAT] Cancelled voting + cleared exercises (< 2 members)', [
+                        'session_id' => $sessionId,
+                        'remaining_count' => $remainingCount,
+                    ]);
+                } else {
+                    // Case A: 2+ remaining — auto-accept for removed members, check if all voted
+                    $votingChanged = false;
+
+                    // Remove disconnected members from voting members list
+                    $activeVoting['members'] = array_values(array_filter(
+                        $activeVoting['members'],
+                        fn($m) => !in_array($m['user_id'], $removedUserIds)
+                    ));
+
+                    // Auto-cast 'accept' for removed members who hadn't voted yet
+                    foreach ($removedUserIds as $removedId) {
+                        if (!isset($activeVoting['votes'][$removedId])) {
+                            $activeVoting['votes'][$removedId] = 'accept';
+                            $votingChanged = true;
+                            Log::info('[HEARTBEAT] Auto-accepted vote for removed member', [
+                                'session_id' => $sessionId,
+                                'user_id' => $removedId,
+                            ]);
+                        }
+                    }
+
+                    // Check if all remaining members have now voted
+                    $remainingMemberIds = array_column($activeVoting['members'], 'user_id');
+                    $allVoted = true;
+                    foreach ($remainingMemberIds as $memberId) {
+                        if (!isset($activeVoting['votes'][$memberId])) {
+                            $allVoted = false;
+                            break;
+                        }
+                    }
+
+                    if ($allVoted && count($remainingMemberIds) > 0) {
+                        // All remaining members voted → complete voting now
+                        Cache::put($votingCacheKey, $activeVoting, $activeVoting['expires_at'] - time());
+                        $this->completeVotingNow($sessionId, $activeVoting, $lobby, 'all_voted_after_disconnect');
+
+                        Log::info('[HEARTBEAT] All remaining members voted, completing voting', [
+                            'session_id' => $sessionId,
+                            'remaining_count' => count($remainingMemberIds),
+                        ]);
+                    } elseif ($votingChanged) {
+                        // Update cache with modified voting data
+                        Cache::put($votingCacheKey, $activeVoting, $activeVoting['expires_at'] - time());
+                    }
+                }
+            }
+
             $lobby->refresh();
             $remainingCount = $lobby->activeMembers()->count();
 
@@ -1145,6 +1286,16 @@ class LobbyController extends Controller
                         $sessionId,
                         $this->buildLobbyState($lobby, $token)
                     ));
+
+                    // Broadcast ready check cancellation AFTER LobbyStateChanged
+                    if ($cancelledReadyCheck) {
+                        broadcast(new ReadyCheckCancelled(
+                            $sessionId,
+                            $cancelledReadyCheck['ready_check_id'],
+                            0, // System-initiated (no specific user)
+                            'A member was disconnected'
+                        ));
+                    }
                 } catch (\Exception $e) {
                     Log::warning('[HEARTBEAT] Failed to broadcast after stale cleanup', [
                         'error' => $e->getMessage(),
