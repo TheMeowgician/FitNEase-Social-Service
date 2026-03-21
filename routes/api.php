@@ -189,6 +189,9 @@ Route::prefix('v2')->middleware([ValidateApiToken::class, 'throttle:api'])->grou
     // Get lobby state - Standard API rate limit
     Route::get('lobby/{sessionId}', [LobbyController::class, 'getLobbyState']);
 
+    // Heartbeat - Extended TTL for minimize/profile view (lightweight, no rate limit)
+    Route::post('lobby/{sessionId}/heartbeat', [LobbyController::class, 'heartbeat']);
+
     // ============================================================================
     // MEMBER STATUS & CONTROL (V2)
     // ============================================================================
