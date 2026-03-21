@@ -4,11 +4,13 @@ namespace App\Http\Controllers;
 
 use App\Models\Group;
 use App\Models\GroupMember;
+use App\Models\GroupJoinRequest;
 use App\Services\AuthService;
 use App\Events\GroupMemberUpdated;
 use Illuminate\Http\Request;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Support\Facades\DB;
+use Illuminate\Support\Facades\Log;
 use Illuminate\Support\Facades\Validator;
 use GuzzleHttp\Client;
 
@@ -28,6 +30,8 @@ class GroupMemberController extends Controller
             ], 422);
         }
 
+        $userId = (int) $request->attributes->get('user_id');
+
         $group = Group::where('group_code', $request->group_code)
             ->active()
             ->first();
@@ -46,46 +50,77 @@ class GroupMemberController extends Controller
             ], 400);
         }
 
+        // Check if user is already an active member
         $existingMembership = GroupMember::where('group_id', $group->group_id)
-            ->where('user_id', $request->attributes->get('user_id'))
+            ->where('user_id', $userId)
+            ->where('is_active', true)
             ->first();
 
         if ($existingMembership) {
-            if ($existingMembership->is_active) {
-                return response()->json([
-                    'status' => 'error',
-                    'message' => 'Already a member of this group'
-                ], 400);
-            } else {
-                $existingMembership->update(['is_active' => true, 'joined_at' => now()]);
-
-                // Broadcast real-time member update when user rejoins
-                $this->broadcastGroupMemberUpdate($group->group_id);
-
-                return response()->json([
-                    'status' => 'success',
-                    'data' => $existingMembership->load(['group']),
-                    'message' => 'Rejoined group successfully'
-                ]);
-            }
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Already a member of this group'
+            ], 400);
         }
 
-        $membership = GroupMember::create([
-            'group_id' => $group->group_id,
-            'user_id' => $request->attributes->get('user_id'),
-            'member_role' => 'member'
-        ]);
+        // Check if user already has a pending request (same check as createJoinRequest)
+        $existingRequest = GroupJoinRequest::where('group_id', $group->group_id)
+            ->where('user_id', $userId)
+            ->pending()
+            ->first();
 
-        $this->notifyGroupJoin($group, $request->attributes->get('user_id'));
+        if ($existingRequest) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'You already have a pending request for this group'
+            ], 400);
+        }
 
-        // Broadcast real-time member update to all group members
-        $this->broadcastGroupMemberUpdate($group->group_id);
+        try {
+            DB::beginTransaction();
 
-        return response()->json([
-            'status' => 'success',
-            'data' => $membership->load(['group']),
-            'message' => 'Joined group successfully'
-        ], 201);
+            // Create join request (same pattern as JoinRequestController::createJoinRequest)
+            $joinRequest = GroupJoinRequest::create([
+                'group_id' => $group->group_id,
+                'user_id' => $userId,
+                'status' => 'pending',
+                'message' => $request->message,
+                'requested_at' => now(),
+            ]);
+
+            DB::commit();
+
+            // Notify group owner via comms service
+            $this->notifyOwnerOfJoinRequest($group, $userId, $request->bearerToken());
+
+            Log::info('Join request created via group code', [
+                'request_id' => $joinRequest->request_id,
+                'group_id' => $group->group_id,
+                'user_id' => $userId,
+            ]);
+
+            return response()->json([
+                'status' => 'success',
+                'message' => 'Join request submitted successfully',
+                'data' => [
+                    'request_id' => $joinRequest->request_id,
+                    'status' => 'pending'
+                ]
+            ], 201);
+
+        } catch (\Exception $e) {
+            DB::rollBack();
+            Log::error('Failed to create join request via group code', [
+                'group_id' => $group->group_id,
+                'user_id' => $userId,
+                'error' => $e->getMessage()
+            ]);
+
+            return response()->json([
+                'status' => 'error',
+                'message' => 'Failed to submit join request'
+            ], 500);
+        }
     }
 
     public function joinGroup(Request $request, string $groupId): JsonResponse
@@ -662,5 +697,52 @@ class GroupMemberController extends Controller
         // Fallback: If batch fetch fails, return empty array
         // Members will show as "User {id}"
         return [];
+    }
+
+    /**
+     * Notify group owner of a new join request (same logic as JoinRequestController)
+     */
+    private function notifyOwnerOfJoinRequest(Group $group, int $requesterId, ?string $token): void
+    {
+        try {
+            $authService = new AuthService();
+            $requesterProfile = $authService->getUserProfile($token, $requesterId);
+            $requesterUsername = $requesterProfile['username'] ?? 'Someone';
+            $requesterRole = $requesterProfile['user_role'] ?? 'member';
+
+            $owner = GroupMember::where('group_id', $group->group_id)
+                ->whereIn('member_role', ['admin', 'owner'])
+                ->where('is_active', true)
+                ->first();
+
+            if (!$owner) {
+                Log::warning('No owner found for group', ['group_id' => $group->group_id]);
+                return;
+            }
+
+            $client = new Client();
+            $client->post(env('COMMS_SERVICE_URL') . '/api/comms/group-join-request', [
+                'json' => [
+                    'owner_user_id' => $owner->user_id,
+                    'requester_user_id' => $requesterId,
+                    'requester_username' => $requesterUsername,
+                    'requester_role' => $requesterRole,
+                    'group_id' => $group->group_id,
+                    'group_name' => $group->group_name,
+                ],
+                'timeout' => 5
+            ]);
+
+            Log::info('Owner notified of join request (via code)', [
+                'owner_id' => $owner->user_id,
+                'requester_id' => $requesterId,
+                'group_id' => $group->group_id
+            ]);
+        } catch (\Exception $e) {
+            Log::warning('Failed to notify owner of join request (via code)', [
+                'group_id' => $group->group_id,
+                'error' => $e->getMessage()
+            ]);
+        }
     }
 }
