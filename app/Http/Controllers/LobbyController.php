@@ -236,8 +236,8 @@ class LobbyController extends Controller
             // Add initiator as first member (cache username for instant pause/resume)
             $lobby->addMember($userId, 'waiting', $userName);
 
-            // Set initial heartbeat for creator
-            Cache::put("lobby:{$sessionId}:hb:{$userId}", 1, 30);
+            // Set initial heartbeat for creator (20s TTL — must exceed 10s poll interval)
+            Cache::put("lobby:{$sessionId}:hb:{$userId}", 1, 20);
 
             // Add system message
             $lobby->addSystemMessage("Lobby created by {$userName}");
@@ -347,8 +347,8 @@ class LobbyController extends Controller
             // Add member (cache username for instant pause/resume)
             $lobby->addMember($userId, 'waiting', $userName);
 
-            // Set initial heartbeat so member isn't removed before first poll
-            Cache::put("lobby:{$sessionId}:hb:{$userId}", 1, 30);
+            // Set initial heartbeat so member isn't removed before first poll (20s TTL)
+            Cache::put("lobby:{$sessionId}:hb:{$userId}", 1, 20);
 
             // Cancel any active ready check: the new member was not included in the
             // existing check's member list, so if the others accepted it would fire
@@ -1023,7 +1023,7 @@ class LobbyController extends Controller
             // Record heartbeat for the calling user (10-second poll doubles as heartbeat)
             $callingUserId = (int) $request->attributes->get('user_id');
             if ($callingUserId > 0) {
-                Cache::put("lobby:{$sessionId}:hb:{$callingUserId}", 1, 30);
+                Cache::put("lobby:{$sessionId}:hb:{$callingUserId}", 1, 20);
             }
 
             // Clean up disconnected members (only during 'waiting' — not during workout)
@@ -1101,8 +1101,8 @@ class LobbyController extends Controller
             // Heartbeat missing — check if grace period was already given
             $graceKey = "lobby:{$sessionId}:hb_grace:{$member->user_id}";
             if (!Cache::has($graceKey)) {
-                // First detection — give 25s grace period before removing
-                Cache::put($graceKey, 1, 25);
+                // First detection — give 10s grace period before removing
+                Cache::put($graceKey, 1, 10);
                 continue;
             }
 
@@ -1415,8 +1415,8 @@ class LobbyController extends Controller
             // Add member (handles both new joins and rejoins after leaving, cache username)
             $lobby->addMember($userId, 'waiting', $userName);
 
-            // Set initial heartbeat so member isn't removed before first poll
-            Cache::put("lobby:{$lobby->session_id}:hb:{$userId}", 1, 30);
+            // Set initial heartbeat so member isn't removed before first poll (20s TTL)
+            Cache::put("lobby:{$lobby->session_id}:hb:{$userId}", 1, 20);
 
             // Add system message
             $lobby->addSystemMessage("{$userName} joined via invitation");
