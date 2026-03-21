@@ -237,7 +237,7 @@ class LobbyController extends Controller
             $lobby->addMember($userId, 'waiting', $userName);
 
             // Set initial heartbeat for creator
-            Cache::put("lobby:{$sessionId}:hb:{$userId}", time(), 30);
+            Cache::put("lobby:{$sessionId}:hb:{$userId}", 1, 30);
 
             // Add system message
             $lobby->addSystemMessage("Lobby created by {$userName}");
@@ -348,7 +348,7 @@ class LobbyController extends Controller
             $lobby->addMember($userId, 'waiting', $userName);
 
             // Set initial heartbeat so member isn't removed before first poll
-            Cache::put("lobby:{$sessionId}:hb:{$userId}", time(), 30);
+            Cache::put("lobby:{$sessionId}:hb:{$userId}", 1, 30);
 
             // Cancel any active ready check: the new member was not included in the
             // existing check's member list, so if the others accepted it would fire
@@ -1023,7 +1023,7 @@ class LobbyController extends Controller
             // Record heartbeat for the calling user (10-second poll doubles as heartbeat)
             $callingUserId = (int) $request->attributes->get('user_id');
             if ($callingUserId > 0) {
-                Cache::put("lobby:{$sessionId}:hb:{$callingUserId}", time(), 30);
+                Cache::put("lobby:{$sessionId}:hb:{$callingUserId}", 1, 30);
             }
 
             // Clean up disconnected members (only during 'waiting' — not during workout)
@@ -1064,7 +1064,7 @@ class LobbyController extends Controller
         $userId = (int) $request->attributes->get('user_id');
         $ttl = min((int) ($request->input('ttl', 30)), 600); // Max 10 minutes
 
-        Cache::put("lobby:{$sessionId}:hb:{$userId}", time(), $ttl);
+        Cache::put("lobby:{$sessionId}:hb:{$userId}", 1, $ttl);
 
         return response()->json(['status' => 'success']);
     }
@@ -1073,6 +1073,15 @@ class LobbyController extends Controller
      * Remove lobby members whose heartbeat has gone stale (disconnected users).
      * Called during getLobbyState to piggyback on the existing 10-second poll.
      * Only runs during 'waiting' status — workouts in progress are not affected.
+     *
+     * Uses cache KEY EXISTENCE as the indicator (not stored timestamps).
+     * Normal heartbeats have 30s TTL (refreshed every 10s by poll).
+     * Extended heartbeats have up to 600s TTL (for minimize/profile view).
+     * When the TTL expires, the key disappears → member is considered stale.
+     *
+     * Grace period: First time a member has no heartbeat, a 25s grace key is set.
+     * If still no heartbeat on the next check → member is removed.
+     * This handles pre-deployment lobbies and edge cases.
      */
     private function cleanupStaleMembers(WorkoutLobby $lobby, string $sessionId, ?string $token = null): void
     {
@@ -1080,37 +1089,44 @@ class LobbyController extends Controller
         $removedAny = false;
 
         foreach ($activeMembers as $member) {
-            $lastHeartbeat = Cache::get("lobby:{$sessionId}:hb:{$member->user_id}");
+            $hbKey = "lobby:{$sessionId}:hb:{$member->user_id}";
 
-            // No heartbeat yet — member just joined, give them an initial entry
-            if ($lastHeartbeat === null) {
-                Cache::put("lobby:{$sessionId}:hb:{$member->user_id}", time(), 30);
+            // Heartbeat exists → member is alive, skip
+            if (Cache::has($hbKey)) {
+                // Clear any leftover grace key (member recovered)
+                Cache::forget("lobby:{$sessionId}:hb_grace:{$member->user_id}");
                 continue;
             }
 
-            $staleDuration = time() - $lastHeartbeat;
-            if ($staleDuration > 25) {
-                Log::info('[HEARTBEAT] Removing stale member from lobby', [
-                    'session_id' => $sessionId,
-                    'user_id' => $member->user_id,
-                    'stale_seconds' => $staleDuration,
-                ]);
+            // Heartbeat missing — check if grace period was already given
+            $graceKey = "lobby:{$sessionId}:hb_grace:{$member->user_id}";
+            if (!Cache::has($graceKey)) {
+                // First detection — give 25s grace period before removing
+                Cache::put($graceKey, 1, 25);
+                continue;
+            }
 
-                $lobby->removeMember($member->user_id, 'heartbeat_timeout');
-                Cache::forget("lobby:{$sessionId}:hb:{$member->user_id}");
-                $removedAny = true;
+            // Grace period already given AND heartbeat still missing → truly stale
+            Log::info('[HEARTBEAT] Removing stale member from lobby', [
+                'session_id' => $sessionId,
+                'user_id' => $member->user_id,
+            ]);
 
-                // If removed member was initiator, transfer role to first remaining member
-                if ($lobby->initiator_id === $member->user_id) {
-                    $remaining = $lobby->activeMembers()->first();
-                    if ($remaining) {
-                        $lobby->transferInitiator($remaining->user_id);
-                        Log::info('[HEARTBEAT] Transferred initiator role', [
-                            'session_id' => $sessionId,
-                            'from' => $member->user_id,
-                            'to' => $remaining->user_id,
-                        ]);
-                    }
+            $lobby->removeMember($member->user_id, 'heartbeat_timeout');
+            Cache::forget($hbKey);
+            Cache::forget($graceKey);
+            $removedAny = true;
+
+            // If removed member was initiator, transfer role to first remaining member
+            if ($lobby->initiator_id === $member->user_id) {
+                $remaining = $lobby->activeMembers()->first();
+                if ($remaining) {
+                    $lobby->transferInitiator($remaining->user_id);
+                    Log::info('[HEARTBEAT] Transferred initiator role', [
+                        'session_id' => $sessionId,
+                        'from' => $member->user_id,
+                        'to' => $remaining->user_id,
+                    ]);
                 }
             }
         }
@@ -1400,7 +1416,7 @@ class LobbyController extends Controller
             $lobby->addMember($userId, 'waiting', $userName);
 
             // Set initial heartbeat so member isn't removed before first poll
-            Cache::put("lobby:{$lobby->session_id}:hb:{$userId}", time(), 30);
+            Cache::put("lobby:{$lobby->session_id}:hb:{$userId}", 1, 30);
 
             // Add system message
             $lobby->addSystemMessage("{$userName} joined via invitation");
