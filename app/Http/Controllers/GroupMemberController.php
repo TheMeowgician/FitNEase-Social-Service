@@ -63,6 +63,70 @@ class GroupMemberController extends Controller
             ], 400);
         }
 
+        // Check if user was invited by an admin (auto-approve)
+        $invitation = GroupJoinRequest::where('group_id', $group->group_id)
+            ->where('user_id', $userId)
+            ->where('status', 'invited')
+            ->first();
+
+        if ($invitation) {
+            try {
+                DB::beginTransaction();
+
+                $invitation->update([
+                    'status' => 'approved',
+                    'responded_at' => now(),
+                ]);
+
+                $existingMember = GroupMember::where('group_id', $group->group_id)
+                    ->where('user_id', $userId)
+                    ->first();
+
+                if ($existingMember) {
+                    $existingMember->update([
+                        'is_active' => true,
+                        'member_role' => 'member',
+                        'joined_at' => now()
+                    ]);
+                } else {
+                    GroupMember::create([
+                        'group_id' => $group->group_id,
+                        'user_id' => $userId,
+                        'member_role' => 'member'
+                    ]);
+                }
+
+                $group->increment('current_member_count');
+
+                DB::commit();
+
+                Log::info('User accepted invitation and joined group', [
+                    'group_id' => $group->group_id,
+                    'user_id' => $userId,
+                ]);
+
+                return response()->json([
+                    'status' => 'success',
+                    'message' => 'Successfully joined the group',
+                    'data' => [
+                        'status' => 'approved'
+                    ]
+                ], 200);
+
+            } catch (\Exception $e) {
+                DB::rollBack();
+                Log::error('Failed to accept invitation', [
+                    'group_id' => $group->group_id,
+                    'user_id' => $userId,
+                    'error' => $e->getMessage()
+                ]);
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'Failed to join group'
+                ], 500);
+            }
+        }
+
         // Check if user already has a pending request (same check as createJoinRequest)
         $existingRequest = GroupJoinRequest::where('group_id', $group->group_id)
             ->where('user_id', $userId)
@@ -257,6 +321,28 @@ class GroupMemberController extends Controller
                 'message' => 'User is already a member'
             ], 400);
         }
+
+        // Check for existing pending invitation to prevent duplicates
+        $existingInvitation = GroupJoinRequest::where('group_id', $group->group_id)
+            ->where('user_id', $targetUserId)
+            ->where('status', 'invited')
+            ->first();
+
+        if ($existingInvitation) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'User has already been invited to this group'
+            ], 400);
+        }
+
+        // Create invitation record so joinGroupWithCode can auto-approve
+        GroupJoinRequest::create([
+            'group_id' => $group->group_id,
+            'user_id' => $targetUserId,
+            'status' => 'invited',
+            'responded_by' => $request->attributes->get('user_id'),
+            'requested_at' => now(),
+        ]);
 
         $this->notifyUserInvitation($group, $targetUserId, $request->attributes->get('user_id'));
 
