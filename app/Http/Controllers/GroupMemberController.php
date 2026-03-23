@@ -322,33 +322,69 @@ class GroupMemberController extends Controller
             ], 400);
         }
 
-        // Check for existing pending invitation to prevent duplicates
+        // Check for existing invitation record
         $existingInvitation = GroupJoinRequest::where('group_id', $group->group_id)
             ->where('user_id', $targetUserId)
-            ->where('status', 'invited')
+            ->whereIn('status', ['invited', 'rejected'])
             ->first();
 
         if ($existingInvitation) {
-            return response()->json([
-                'status' => 'error',
-                'message' => 'User has already been invited to this group'
-            ], 400);
+            if ($existingInvitation->status === 'invited') {
+                return response()->json([
+                    'status' => 'error',
+                    'message' => 'User has already been invited to this group'
+                ], 400);
+            }
+            // Previously rejected — allow re-invite by updating the record
+            $existingInvitation->update([
+                'status' => 'invited',
+                'responded_by' => $request->attributes->get('user_id'),
+                'requested_at' => now(),
+                'responded_at' => null,
+            ]);
+        } else {
+            // Create new invitation record so joinGroupWithCode can auto-approve
+            GroupJoinRequest::create([
+                'group_id' => $group->group_id,
+                'user_id' => $targetUserId,
+                'status' => 'invited',
+                'responded_by' => $request->attributes->get('user_id'),
+                'requested_at' => now(),
+            ]);
         }
-
-        // Create invitation record so joinGroupWithCode can auto-approve
-        GroupJoinRequest::create([
-            'group_id' => $group->group_id,
-            'user_id' => $targetUserId,
-            'status' => 'invited',
-            'responded_by' => $request->attributes->get('user_id'),
-            'requested_at' => now(),
-        ]);
 
         $this->notifyUserInvitation($group, $targetUserId, $request->attributes->get('user_id'));
 
         return response()->json([
             'status' => 'success',
             'message' => 'Invitation sent successfully'
+        ]);
+    }
+
+    public function declineGroupInvitation(Request $request, string $groupId): JsonResponse
+    {
+        $userId = $request->attributes->get('user_id');
+
+        $invitation = GroupJoinRequest::where('group_id', $groupId)
+            ->where('user_id', $userId)
+            ->where('status', 'invited')
+            ->first();
+
+        if (!$invitation) {
+            return response()->json([
+                'status' => 'error',
+                'message' => 'No pending invitation found'
+            ], 404);
+        }
+
+        $invitation->update([
+            'status' => 'rejected',
+            'responded_at' => now(),
+        ]);
+
+        return response()->json([
+            'status' => 'success',
+            'message' => 'Invitation declined'
         ]);
     }
 

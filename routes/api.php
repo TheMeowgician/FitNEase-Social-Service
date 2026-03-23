@@ -45,6 +45,7 @@ Route::prefix('')->middleware([ValidateApiToken::class, 'throttle:api'])->group(
     Route::post('groups/{groupId}/join', [GroupMemberController::class, 'joinGroup']);
     Route::post('groups/join-with-code', [GroupMemberController::class, 'joinGroupWithCode']);
     Route::post('groups/{groupId}/invite', [GroupMemberController::class, 'inviteUser']);
+    Route::post('groups/{groupId}/decline-invitation', [GroupMemberController::class, 'declineGroupInvitation']);
     Route::delete('groups/{groupId}/leave', [GroupMemberController::class, 'leaveGroup']);
     Route::get('user-groups/{userId}', [GroupMemberController::class, 'getUserGroups']);
     Route::put('groups/{groupId}/members/{userId}/role', [GroupMemberController::class, 'updateMemberRole']);
